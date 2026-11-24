@@ -397,7 +397,11 @@ export function renderMarkdownToHtml(
       },
       image({ href, title, text }) {
         const rawHref = href || '';
-        const resolvedHref = imagePreviewMap?.[rawHref] ?? rawHref;
+        const base = import.meta.env.BASE_URL || '/';
+        const normalizedHref = rawHref.startsWith('./')
+          ? `${base}${rawHref.slice(2)}`
+          : rawHref;
+        const resolvedHref = imagePreviewMap?.[rawHref] ?? normalizedHref;
         const altAttr = escapeHtml(text || '');
         const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
         const caption = text

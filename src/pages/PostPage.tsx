@@ -155,7 +155,11 @@ export function PostPage({ posts, session }: PostPageProps) {
             {post.coverImage && (
               <div className="mt-9 overflow-hidden rounded-[10px] border border-rule bg-surface">
                 <img
-                  src={post.coverImage}
+                  src={
+                    post.coverImage.startsWith('./')
+                      ? `${import.meta.env.BASE_URL}${post.coverImage.slice(2)}`
+                      : post.coverImage
+                  }
                   alt=""
                   className="max-h-[460px] w-full object-cover"
                 />

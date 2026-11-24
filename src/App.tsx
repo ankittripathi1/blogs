@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { HashRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { getAllPosts, getBundledRepoPosts, getLocalPosts } from './lib/posts';
 import { loadAdminSession } from './lib/github';
 import type { AdminSession, Post } from './types/post';
@@ -142,9 +142,9 @@ function AppShell() {
 
 export function App() {
   return (
-    <HashRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       <AppShell />
-    </HashRouter>
+    </BrowserRouter>
   );
 }
 
