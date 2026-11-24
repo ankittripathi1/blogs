@@ -10,7 +10,7 @@ interface HomePageProps {
   session: AdminSession | null;
 }
 
-export function HomePage({ posts }: HomePageProps) {
+export function HomePage({ posts, session }: HomePageProps) {
   const listRef = useRef<HTMLUListElement>(null);
   const [glide, setGlide] = useState<{ top: number; height: number; visible: boolean }>({
     top: 0,
@@ -71,10 +71,12 @@ export function HomePage({ posts }: HomePageProps) {
             {posts.length === 0 ? (
               <div className="border-t border-rule py-14">
                 <p className="text-[15.5px] text-ink-2">No posts yet.</p>
-                <Link to="/admin/new" className="btn-primary mt-6 min-h-[40px] px-5">
-                  <PenLine className="h-4 w-4" />
-                  <span>Write first post</span>
-                </Link>
+                {session && (
+                  <Link to="/admin/new" className="btn-primary mt-6 min-h-[40px] px-5">
+                    <PenLine className="h-4 w-4" />
+                    <span>Write first post</span>
+                  </Link>
+                )}
               </div>
             ) : (
               <div className="relative">

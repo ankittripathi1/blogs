@@ -89,21 +89,23 @@ export function Navbar({ session, onOpenSearch }: NavbarProps) {
           <ThemeToggle />
 
           {session && (
-            <Link
-              to="/admin"
-              className="editorial-link hidden min-h-[36px] px-1.5 text-[13.5px] font-medium sm:inline-flex"
-            >
-              Entries
-            </Link>
-          )}
+            <>
+              <Link
+                to="/admin"
+                className="editorial-link hidden min-h-[36px] px-1.5 text-[13.5px] font-medium sm:inline-flex"
+              >
+                Entries
+              </Link>
 
-          <Link
-            to="/admin/new"
-            className="btn-primary min-h-[36px] px-4 text-[13px]"
-          >
-            <PenLine className="h-3.5 w-3.5 shrink-0" />
-            <span>Write</span>
-          </Link>
+              <Link
+                to="/admin/new"
+                className="btn-primary min-h-[36px] px-4 text-[13px]"
+              >
+                <PenLine className="h-3.5 w-3.5 shrink-0" />
+                <span>Write</span>
+              </Link>
+            </>
+          )}
         </nav>
       </div>
     </header>
