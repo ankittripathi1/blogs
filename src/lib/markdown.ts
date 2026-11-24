@@ -350,6 +350,63 @@ export function serializePostToMarkdown(post: PostInput): string {
   return lines.join('\n');
 }
 
+export interface PostHeading {
+  id: string;
+  text: string;
+  level: 2 | 3;
+}
+
+function stripInlineMarkdown(text: string): string {
+  return text
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/(\*\*|__)(.*?)\1/g, '$2')
+    .replace(/(\*|_)(.*?)\1/g, '$2')
+    .replace(/~~(.*?)~~/g, '$1')
+    .replace(/<[^>]+>/g, '')
+    .trim();
+}
+
+function createHeadingIdGenerator() {
+  const seen = new Map<string, number>();
+  return (rawText: string): string => {
+    const base = slugify(stripInlineMarkdown(rawText));
+    const count = seen.get(base) ?? 0;
+    seen.set(base, count + 1);
+    return count === 0 ? base : `${base}-${count + 1}`;
+  };
+}
+
+export function extractHeadings(markdown: string): PostHeading[] {
+  const headings: PostHeading[] = [];
+  const nextId = createHeadingIdGenerator();
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n');
+  let inFence = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^(`{3,}|~{3,})/.test(trimmed)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+
+    const match = trimmed.match(/^(#{2,3})\s+(.+?)\s*#*$/);
+    if (!match) continue;
+    const level = match[1].length as 2 | 3;
+    const cleanText = stripInlineMarkdown(match[2]);
+    if (!cleanText) continue;
+    headings.push({
+      id: nextId(cleanText),
+      text: cleanText,
+      level,
+    });
+  }
+
+  return headings;
+}
+
 function escapeHtml(str: string): string {
   return str
     .replace(/&/g, '&amp;')
@@ -363,10 +420,20 @@ export function renderMarkdownToHtml(
   markdown: string,
   imagePreviewMap?: Record<string, string>,
 ): string {
+  const nextHeadingId = createHeadingIdGenerator();
+
   const markedInstance = new Marked({
     gfm: true,
     breaks: false,
     renderer: {
+      heading({ tokens, depth, text }) {
+        const html = this.parser.parseInline(tokens);
+        if (depth === 2 || depth === 3) {
+          const id = nextHeadingId(text);
+          return `<h${depth} id="${escapeHtml(id)}">${html}</h${depth}>\n`;
+        }
+        return `<h${depth}>${html}</h${depth}>\n`;
+      },
       code({ text, lang }) {
         const normalizedLang = (lang || '').trim().toLowerCase();
         let highlighted: string;

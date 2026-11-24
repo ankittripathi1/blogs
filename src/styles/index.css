@@ -480,6 +480,14 @@ html.theme-transitioning *::after {
   line-height: 1.25;
   margin-top: 2.5rem;
   margin-bottom: 0.75rem;
+  scroll-margin-top: 6rem;
+}
+
+/* Smooth Benji-style section index links */
+.toc-link {
+  transition:
+    color 240ms var(--ease-smooth),
+    transform 240ms var(--ease-smooth);
 }
 
 .prose-til h1,
