@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -24,6 +24,12 @@ export function PostPage({ posts, session }: PostPageProps) {
   const [focusMode, setFocusMode] = useState(false);
   const [activeHeadingId, setActiveHeadingId] = useState<string>('');
   const [mobileTocOpen, setMobileTocOpen] = useState(false);
+  const tocItemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [railPos, setRailPos] = useState<{ top: number; height: number; visible: boolean }>({
+    top: 0,
+    height: 0,
+    visible: false,
+  });
 
   const postIndex = useMemo(() => posts.findIndex((p) => p.slug === slug), [posts, slug]);
   const post = postIndex >= 0 ? posts[postIndex] : undefined;
@@ -39,6 +45,25 @@ export function PostPage({ posts, session }: PostPageProps) {
     setActiveHeadingId(headings[0]?.id ?? '');
     setMobileTocOpen(false);
   }, [slug, headings]);
+
+  useLayoutEffect(() => {
+    const updateRail = () => {
+      if (!activeHeadingId) {
+        setRailPos((prev) => ({ ...prev, visible: false }));
+        return;
+      }
+      const el = tocItemRefs.current[activeHeadingId];
+      if (!el) return;
+      setRailPos({
+        top: el.offsetTop + 2,
+        height: Math.max(14, el.offsetHeight - 4),
+        visible: true,
+      });
+    };
+    updateRail();
+    window.addEventListener('resize', updateRail);
+    return () => window.removeEventListener('resize', updateRail);
+  }, [activeHeadingId, headings]);
 
   useEffect(() => {
     const onScroll = () => {
@@ -144,29 +169,43 @@ export function PostPage({ posts, session }: PostPageProps) {
 
                 {headings.length > 0 && (
                   <nav aria-label="On this page" className="mt-12">
-                    <ul className="space-y-2">
-                      {headings.map((heading) => {
-                        const isActive = activeHeadingId === heading.id;
-                        return (
-                          <li key={heading.id}>
-                            <button
-                              type="button"
-                              onClick={() => scrollToHeading(heading.id)}
-                              aria-current={isActive ? 'location' : undefined}
-                              className={`toc-link block w-full text-left text-[13.5px] leading-[1.45] cursor-pointer ${
-                                heading.level === 3 ? 'pl-3' : ''
-                              } ${
-                                isActive
-                                  ? 'font-medium text-ink'
-                                  : 'text-ink-3 hover:text-ink-2'
-                              }`}
-                            >
-                              {heading.text}
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
+                    <div className="relative border-l border-rule pl-3.5">
+                      <span
+                        aria-hidden="true"
+                        className="toc-rail-indicator"
+                        style={{
+                          transform: `translate3d(0, ${railPos.top}px, 0)`,
+                          height: `${railPos.height}px`,
+                          opacity: railPos.visible ? 1 : 0,
+                        }}
+                      />
+                      <ul className="space-y-2">
+                        {headings.map((heading) => {
+                          const isActive = activeHeadingId === heading.id;
+                          return (
+                            <li key={heading.id}>
+                              <button
+                                ref={(node) => {
+                                  tocItemRefs.current[heading.id] = node;
+                                }}
+                                type="button"
+                                onClick={() => scrollToHeading(heading.id)}
+                                aria-current={isActive ? 'location' : undefined}
+                                className={`toc-link block w-full text-left text-[13.5px] leading-[1.45] cursor-pointer ${
+                                  heading.level === 3 ? 'pl-3' : ''
+                                } ${
+                                  isActive
+                                    ? 'font-medium text-ink'
+                                    : 'text-ink-3 hover:text-ink-2'
+                                }`}
+                              >
+                                {heading.text}
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
                   </nav>
                 )}
               </div>
@@ -272,30 +311,32 @@ export function PostPage({ posts, session }: PostPageProps) {
                       }`}
                     />
                   </button>
-                  {mobileTocOpen && (
-                    <ul className="space-y-1.5 border-t border-rule px-4 py-3">
-                      {headings.map((heading) => {
-                        const isActive = activeHeadingId === heading.id;
-                        return (
-                          <li key={heading.id}>
-                            <button
-                              type="button"
-                              onClick={() => scrollToHeading(heading.id)}
-                              className={`toc-link block w-full py-0.5 text-left text-[13.5px] cursor-pointer ${
-                                heading.level === 3 ? 'pl-3' : ''
-                              } ${
-                                isActive
-                                  ? 'font-medium text-ink'
-                                  : 'text-ink-2 hover:text-ink'
-                              }`}
-                            >
-                              {heading.text}
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
+                  <div className="collapse-grid" data-open={mobileTocOpen}>
+                    <div className="collapse-inner">
+                      <ul className="space-y-1.5 border-t border-rule px-4 py-3">
+                        {headings.map((heading) => {
+                          const isActive = activeHeadingId === heading.id;
+                          return (
+                            <li key={heading.id}>
+                              <button
+                                type="button"
+                                onClick={() => scrollToHeading(heading.id)}
+                                className={`toc-link block w-full py-0.5 text-left text-[13.5px] cursor-pointer ${
+                                  heading.level === 3 ? 'pl-3' : ''
+                                } ${
+                                  isActive
+                                    ? 'font-medium text-ink'
+                                    : 'text-ink-2 hover:text-ink'
+                                }`}
+                              >
+                                {heading.text}
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  </div>
                 </div>
               )}
 

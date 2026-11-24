@@ -33,8 +33,10 @@ export function MarkdownRenderer({
         await navigator.clipboard.writeText(rawCode);
         const original = button.textContent;
         button.textContent = 'Copied';
+        button.setAttribute('data-copied', 'true');
         window.setTimeout(() => {
           button.textContent = original || 'Copy';
+          button.removeAttribute('data-copied');
         }, 1600);
       } catch {
         button.textContent = 'Failed';

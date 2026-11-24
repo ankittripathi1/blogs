@@ -445,6 +445,11 @@ html.theme-transitioning *::after {
   .post-list-item,
   .modal-backdrop,
   .modal-panel,
+  .collapse-grid,
+  .collapse-inner,
+  .toc-rail-indicator,
+  .segmented-pill,
+  .toast-surface,
   .btn-primary,
   .btn-secondary,
   .editorial-link,
@@ -457,6 +462,66 @@ html.theme-transitioning *::after {
     transition-duration: 0.01ms !important;
     transform: none !important;
   }
+}
+
+/* Smooth CSS Grid collapse (no height snap, no text slice) */
+.collapse-grid {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 240ms var(--ease-smooth),
+    opacity 200ms var(--ease-silk);
+}
+
+.collapse-grid[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.collapse-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Gliding vertical active indicator on the sticky post index */
+.toc-rail-indicator {
+  position: absolute;
+  left: -1px;
+  top: 0;
+  width: 1.5px;
+  border-radius: 999px;
+  background-color: var(--color-accent);
+  pointer-events: none;
+  will-change: transform, height, opacity;
+  transition:
+    transform 260ms var(--ease-smooth),
+    height 260ms var(--ease-smooth),
+    opacity 180ms var(--ease-silk);
+}
+
+/* Sliding highlight pill for segmented controls & filter tabs */
+.segmented-pill {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+  border-radius: 999px;
+  background-color: var(--color-ink);
+  pointer-events: none;
+  will-change: transform, width, opacity;
+  transition:
+    transform 240ms var(--ease-smooth),
+    width 240ms var(--ease-smooth),
+    opacity 180ms var(--ease-silk);
+}
+
+/* Non-jumping floating status toast */
+.toast-surface {
+  box-shadow: var(--modal-shadow);
+  transition:
+    transform 220ms var(--ease-smooth),
+    opacity 180ms var(--ease-silk);
 }
 
 /* Article reading typography */
@@ -650,13 +715,22 @@ html.theme-transitioning *::after {
   border-radius: 5px;
   cursor: pointer;
   transition:
-    background-color 200ms var(--ease-tactile),
-    color 200ms var(--ease-tactile);
+    background-color 180ms var(--ease-tactile),
+    color 180ms var(--ease-tactile),
+    transform 110ms var(--ease-press);
 }
 
 .til-copy-btn:hover {
   color: var(--color-ink);
   background: var(--color-rule);
+}
+
+.til-copy-btn:active {
+  transform: scale(0.95);
+}
+
+.til-copy-btn[data-copied="true"] {
+  color: var(--color-success);
 }
 
 .til-code-block pre {

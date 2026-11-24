@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Check,
@@ -52,6 +52,23 @@ export function AdminDashboardPage({
   const [uploadingMedia, setUploadingMedia] = useState(false);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const filterTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [filterPill, setFilterPill] = useState<{ left: number; width: number; ready: boolean }>({
+    left: 0,
+    width: 0,
+    ready: false,
+  });
+
+  useLayoutEffect(() => {
+    const updatePill = () => {
+      const el = filterTabRefs.current[filter];
+      if (!el) return;
+      setFilterPill({ left: el.offsetLeft, width: el.offsetWidth, ready: true });
+    };
+    updatePill();
+    window.addEventListener('resize', updatePill);
+    return () => window.removeEventListener('resize', updatePill);
+  }, [filter, section, localDrafts.length, livePosts?.length]);
 
   const syncFromGitHub = useCallback(async () => {
     if (session.mode !== 'github') return;
@@ -233,7 +250,16 @@ export function AdminDashboardPage({
             </div>
 
             <div className="mt-9 flex flex-col justify-between gap-3 border-b border-rule pb-4 sm:flex-row sm:items-center">
-              <div className="flex items-center gap-1.5">
+              <div className="relative inline-flex items-center gap-0.5 rounded-full border border-rule bg-surface p-0.5">
+                <span
+                  aria-hidden="true"
+                  className="segmented-pill"
+                  style={{
+                    transform: `translate3d(${filterPill.left}px, 0, 0)`,
+                    width: `${filterPill.width}px`,
+                    opacity: filterPill.ready ? 1 : 0,
+                  }}
+                />
                 {(
                   [
                     { id: 'all', label: 'All', count: counts.all },
@@ -243,19 +269,20 @@ export function AdminDashboardPage({
                 ).map((tab) => (
                   <button
                     key={tab.id}
+                    ref={(node) => {
+                      filterTabRefs.current[tab.id] = node;
+                    }}
                     type="button"
                     onClick={() => setFilter(tab.id)}
                     aria-pressed={filter === tab.id}
-                    className={`inline-flex min-h-[36px] items-center gap-1.5 rounded-full px-3.5 text-[13.5px] font-medium transition-colors cursor-pointer ${
-                      filter === tab.id
-                        ? 'bg-ink text-paper'
-                        : 'text-ink-2 hover:bg-surface hover:text-ink'
+                    className={`relative z-10 inline-flex min-h-[34px] items-center gap-1.5 rounded-full px-3.5 text-[13.5px] font-medium transition-colors duration-200 cursor-pointer ${
+                      filter === tab.id ? 'text-paper' : 'text-ink-2 hover:text-ink'
                     }`}
                   >
                     <span>{tab.label}</span>
                     <span
-                      className={`font-mono text-[12px] tabular-nums ${
-                        filter === tab.id ? 'text-paper/70' : 'text-ink-3'
+                      className={`font-mono text-[12px] tabular-nums transition-colors duration-200 ${
+                        filter === tab.id ? 'text-paper/75' : 'text-ink-3'
                       }`}
                     >
                       {tab.count}

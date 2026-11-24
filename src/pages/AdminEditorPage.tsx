@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -138,6 +139,23 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
   const rawTextareaRef = useRef<HTMLTextAreaElement>(null);
   const inlineImageInputRef = useRef<HTMLInputElement>(null);
   const coverImageInputRef = useRef<HTMLInputElement>(null);
+  const viewTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [viewPill, setViewPill] = useState<{ left: number; width: number; ready: boolean }>({
+    left: 0,
+    width: 0,
+    ready: false,
+  });
+
+  useLayoutEffect(() => {
+    const updatePill = () => {
+      const el = viewTabRefs.current[viewMode];
+      if (!el) return;
+      setViewPill({ left: el.offsetLeft, width: el.offsetWidth, ready: true });
+    };
+    updatePill();
+    window.addEventListener('resize', updatePill);
+    return () => window.removeEventListener('resize', updatePill);
+  }, [viewMode]);
 
   useEffect(() => {
     if (existingPost) {
@@ -535,7 +553,16 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                 {wordCount} {wordCount === 1 ? 'word' : 'words'} · {readingMinutes} min
               </span>
 
-              <div className="inline-flex rounded-full border border-rule bg-surface p-0.5">
+              <div className="relative inline-flex rounded-full border border-rule bg-surface p-0.5">
+                <span
+                  aria-hidden="true"
+                  className="segmented-pill"
+                  style={{
+                    transform: `translate3d(${viewPill.left}px, 0, 0)`,
+                    width: `${viewPill.width}px`,
+                    opacity: viewPill.ready ? 1 : 0,
+                  }}
+                />
                 {(
                   [
                     { id: 'write', label: 'Write', icon: PenLine },
@@ -545,15 +572,16 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                 ).map(({ id, label, icon: Icon }) => (
                   <button
                     key={id}
+                    ref={(node) => {
+                      viewTabRefs.current[id] = node;
+                    }}
                     type="button"
                     onClick={() => setViewMode(id)}
                     aria-label={label}
                     aria-pressed={viewMode === id}
                     title={label}
-                    className={`inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-[12px] font-medium transition-colors cursor-pointer ${
-                      viewMode === id
-                        ? 'bg-ink text-paper'
-                        : 'text-ink-2 hover:text-ink'
+                    className={`relative z-10 inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-[12px] font-medium transition-colors duration-200 cursor-pointer ${
+                      viewMode === id ? 'text-paper' : 'text-ink-2 hover:text-ink'
                     }`}
                   >
                     <Icon className="h-3.5 w-3.5" />
@@ -589,60 +617,65 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
           </div>
         </div>
 
-        {/* Status banner */}
-        {(error || notice || publishResult) && (
-          <div className="border-b border-rule bg-surface">
-            <div className="mx-auto flex max-w-[1280px] flex-wrap items-center justify-between gap-3 px-5 py-2 text-[13px] sm:px-8">
-              <div className="flex flex-wrap items-center gap-4">
-                {error && <span className="font-medium text-danger">{error}</span>}
-                {notice && (
+        {/* Non-jumping floating status toast */}
+        <div
+          aria-live="polite"
+          className={`toast-surface fixed bottom-5 right-5 z-40 max-w-[420px] rounded-[12px] border border-rule-strong bg-card px-4 py-3 text-[13px] ${
+            error || notice || publishResult
+              ? 'translate-y-0 scale-100 opacity-100'
+              : 'pointer-events-none translate-y-2 scale-[0.98] opacity-0'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-3">
+              {error && <span className="font-medium text-danger">{error}</span>}
+              {notice && (
+                <span className="inline-flex items-center gap-1.5 font-medium text-success">
+                  <Check className="h-3.5 w-3.5" />
+                  {notice}
+                </span>
+              )}
+              {publishResult && (
+                <>
                   <span className="inline-flex items-center gap-1.5 font-medium text-success">
                     <Check className="h-3.5 w-3.5" />
-                    {notice}
+                    Published to GitHub
                   </span>
-                )}
-                {publishResult && (
-                  <>
-                    <span className="inline-flex items-center gap-1.5 font-medium text-success">
-                      <Check className="h-3.5 w-3.5" />
-                      Published to GitHub
-                    </span>
-                    <a
-                      href={publishResult.commitUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="editorial-link text-[12.5px] text-ink"
-                    >
-                      <span>View commit</span>
-                      <ExternalLink className="h-3 w-3" />
-                    </a>
-                    <a
-                      href={publishResult.actionsUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="editorial-link text-[12.5px] text-ink"
-                    >
-                      <span>Deploy status</span>
-                      <ExternalLink className="h-3 w-3" />
-                    </a>
-                  </>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setError(null);
-                  setNotice(null);
-                  setPublishResult(null);
-                }}
-                aria-label="Dismiss message"
-                className="text-ink-2 hover:text-ink cursor-pointer"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
+                  <a
+                    href={publishResult.commitUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="editorial-link text-[12.5px] text-ink"
+                  >
+                    <span>Commit</span>
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                  <a
+                    href={publishResult.actionsUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="editorial-link text-[12.5px] text-ink"
+                  >
+                    <span>Deploy</span>
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </>
+              )}
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setNotice(null);
+                setPublishResult(null);
+              }}
+              aria-label="Dismiss message"
+              className="text-ink-2 transition-colors hover:text-ink cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
           </div>
-        )}
+        </div>
 
         {/* Main Writing & Preview Split */}
         <div
@@ -703,89 +736,91 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                   />
 
                   {/* Collapsible Details */}
-                  {showDetails && (
-                    <div className="mt-6 grid grid-cols-1 gap-3.5 rounded-[10px] border border-rule bg-card p-4 sm:grid-cols-2">
-                      <div>
-                        <label
-                          htmlFor="meta-date"
-                          className="block text-[12.5px] font-medium text-ink-2"
-                        >
-                          Date
-                        </label>
-                        <input
-                          id="meta-date"
-                          type="date"
-                          value={fields.date}
-                          onChange={(e) =>
-                            setFields((prev) => ({ ...prev, date: e.target.value }))
-                          }
-                          className="mt-1.5 w-full rounded-[6px] border border-rule bg-paper px-3 py-2 text-[13.5px] text-ink focus:border-ink focus:outline-none"
-                        />
-                      </div>
-
-                      <div>
-                        <label
-                          htmlFor="meta-tags"
-                          className="block text-[12.5px] font-medium text-ink-2"
-                        >
-                          Tags (comma-separated)
-                        </label>
-                        <input
-                          id="meta-tags"
-                          type="text"
-                          value={fields.tagsText}
-                          onChange={(e) =>
-                            setFields((prev) => ({ ...prev, tagsText: e.target.value }))
-                          }
-                          placeholder="Notes, Essays, Ideas"
-                          className="mt-1.5 w-full rounded-[6px] border border-rule bg-paper px-3 py-2 text-[13.5px] text-ink placeholder:text-ink-3 focus:border-ink focus:outline-none"
-                        />
-                      </div>
-
-                      <div className="sm:col-span-2">
-                        <label
-                          htmlFor="meta-snippet"
-                          className="block text-[12.5px] font-medium text-ink-2"
-                        >
-                          Highlight snippet (optional)
-                        </label>
-                        <input
-                          id="meta-snippet"
-                          type="text"
-                          value={fields.snippet}
-                          onChange={(e) =>
-                            setFields((prev) => ({ ...prev, snippet: e.target.value }))
-                          }
-                          placeholder="Single-line code or quote shown on the lead entry"
-                          className="mt-1.5 w-full rounded-[6px] border border-rule bg-paper px-3 py-2 font-mono text-[13px] text-ink placeholder:text-ink-3 focus:border-ink focus:outline-none"
-                        />
-                      </div>
-
-                      <div className="flex items-center justify-between pt-1 sm:col-span-2">
-                        <label className="inline-flex items-center gap-2 text-[13px] font-medium text-ink cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={fields.featured}
-                            onChange={(e) =>
-                              setFields((prev) => ({ ...prev, featured: e.target.checked }))
-                            }
-                            className="h-4 w-4 accent-[var(--color-accent)]"
-                          />
-                          <span>Feature as lead post on home page</span>
-                        </label>
-
-                        {fields.coverImage && (
-                          <button
-                            type="button"
-                            onClick={() => setFields((prev) => ({ ...prev, coverImage: '' }))}
-                            className="text-[12.5px] font-medium text-danger hover:underline cursor-pointer"
+                  <div className="collapse-grid" data-open={showDetails}>
+                    <div className="collapse-inner">
+                      <div className="mt-6 grid grid-cols-1 gap-3.5 rounded-[10px] border border-rule bg-card p-4 sm:grid-cols-2">
+                        <div>
+                          <label
+                            htmlFor="meta-date"
+                            className="block text-[12.5px] font-medium text-ink-2"
                           >
-                            Remove cover
-                          </button>
-                        )}
+                            Date
+                          </label>
+                          <input
+                            id="meta-date"
+                            type="date"
+                            value={fields.date}
+                            onChange={(e) =>
+                              setFields((prev) => ({ ...prev, date: e.target.value }))
+                            }
+                            className="mt-1.5 w-full rounded-[6px] border border-rule bg-paper px-3 py-2 text-[13.5px] text-ink focus:border-ink focus:outline-none"
+                          />
+                        </div>
+
+                        <div>
+                          <label
+                            htmlFor="meta-tags"
+                            className="block text-[12.5px] font-medium text-ink-2"
+                          >
+                            Tags (comma-separated)
+                          </label>
+                          <input
+                            id="meta-tags"
+                            type="text"
+                            value={fields.tagsText}
+                            onChange={(e) =>
+                              setFields((prev) => ({ ...prev, tagsText: e.target.value }))
+                            }
+                            placeholder="Notes, Essays, Ideas"
+                            className="mt-1.5 w-full rounded-[6px] border border-rule bg-paper px-3 py-2 text-[13.5px] text-ink placeholder:text-ink-3 focus:border-ink focus:outline-none"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-2">
+                          <label
+                            htmlFor="meta-snippet"
+                            className="block text-[12.5px] font-medium text-ink-2"
+                          >
+                            Highlight snippet (optional)
+                          </label>
+                          <input
+                            id="meta-snippet"
+                            type="text"
+                            value={fields.snippet}
+                            onChange={(e) =>
+                              setFields((prev) => ({ ...prev, snippet: e.target.value }))
+                            }
+                            placeholder="Single-line code or quote shown on the lead entry"
+                            className="mt-1.5 w-full rounded-[6px] border border-rule bg-paper px-3 py-2 font-mono text-[13px] text-ink placeholder:text-ink-3 focus:border-ink focus:outline-none"
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-between pt-1 sm:col-span-2">
+                          <label className="inline-flex items-center gap-2 text-[13px] font-medium text-ink cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={fields.featured}
+                              onChange={(e) =>
+                                setFields((prev) => ({ ...prev, featured: e.target.checked }))
+                              }
+                              className="h-4 w-4 accent-[var(--color-accent)]"
+                            />
+                            <span>Feature as lead post on home page</span>
+                          </label>
+
+                          {fields.coverImage && (
+                            <button
+                              type="button"
+                              onClick={() => setFields((prev) => ({ ...prev, coverImage: '' }))}
+                              className="text-[12.5px] font-medium text-danger hover:underline cursor-pointer"
+                            >
+                              Remove cover
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  )}
+                  </div>
 
                   {/* Body Writing Area */}
                   <div className="mt-6 flex flex-1 flex-col border-t border-rule pt-6">

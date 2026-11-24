@@ -113,60 +113,62 @@ export function AdminLoginPage({ onAuthenticated }: AdminLoginPageProps) {
                 />
               </button>
 
-              {showSetup && (
-                <div className="mt-4 space-y-3.5 border-t border-rule pt-4">
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                    <div>
-                      <label htmlFor="gh-owner" className="block text-[12.5px] text-ink-2">
-                        Owner
-                      </label>
-                      <input
-                        id="gh-owner"
-                        type="text"
-                        value={owner}
-                        onChange={(e) => setOwner(e.target.value)}
-                        required
-                        className="mt-1 w-full rounded-[6px] border border-rule bg-paper px-2.5 py-2 text-[13.5px] text-ink focus:border-ink focus:outline-none"
-                      />
+              <div className="collapse-grid" data-open={showSetup}>
+                <div className="collapse-inner">
+                  <div className="mt-4 space-y-3.5 border-t border-rule pt-4">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                      <div>
+                        <label htmlFor="gh-owner" className="block text-[12.5px] text-ink-2">
+                          Owner
+                        </label>
+                        <input
+                          id="gh-owner"
+                          type="text"
+                          value={owner}
+                          onChange={(e) => setOwner(e.target.value)}
+                          required
+                          className="mt-1 w-full rounded-[6px] border border-rule bg-paper px-2.5 py-2 text-[13.5px] text-ink focus:border-ink focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="gh-repo" className="block text-[12.5px] text-ink-2">
+                          Repository
+                        </label>
+                        <input
+                          id="gh-repo"
+                          type="text"
+                          value={repo}
+                          onChange={(e) => setRepo(e.target.value)}
+                          required
+                          className="mt-1 w-full rounded-[6px] border border-rule bg-paper px-2.5 py-2 text-[13.5px] text-ink focus:border-ink focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="gh-branch" className="block text-[12.5px] text-ink-2">
+                          Branch
+                        </label>
+                        <input
+                          id="gh-branch"
+                          type="text"
+                          value={branch}
+                          onChange={(e) => setBranch(e.target.value)}
+                          required
+                          className="mt-1 w-full rounded-[6px] border border-rule bg-paper px-2.5 py-2 text-[13.5px] text-ink focus:border-ink focus:outline-none"
+                        />
+                      </div>
                     </div>
-                    <div>
-                      <label htmlFor="gh-repo" className="block text-[12.5px] text-ink-2">
-                        Repository
-                      </label>
-                      <input
-                        id="gh-repo"
-                        type="text"
-                        value={repo}
-                        onChange={(e) => setRepo(e.target.value)}
-                        required
-                        className="mt-1 w-full rounded-[6px] border border-rule bg-paper px-2.5 py-2 text-[13.5px] text-ink focus:border-ink focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label htmlFor="gh-branch" className="block text-[12.5px] text-ink-2">
-                        Branch
-                      </label>
-                      <input
-                        id="gh-branch"
-                        type="text"
-                        value={branch}
-                        onChange={(e) => setBranch(e.target.value)}
-                        required
-                        className="mt-1 w-full rounded-[6px] border border-rule bg-paper px-2.5 py-2 text-[13.5px] text-ink focus:border-ink focus:outline-none"
-                      />
-                    </div>
+                    <a
+                      href="https://github.com/settings/personal-access-tokens/new"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline"
+                    >
+                      <span>Create fine-grained token (Contents: read &amp; write)</span>
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </a>
                   </div>
-                  <a
-                    href="https://github.com/settings/personal-access-tokens/new"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline"
-                  >
-                    <span>Create fine-grained token (Contents: read &amp; write)</span>
-                    <ExternalLink className="h-3.5 w-3.5" />
-                  </a>
                 </div>
-              )}
+              </div>
             </div>
           </form>
 
