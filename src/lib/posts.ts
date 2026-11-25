@@ -1,4 +1,5 @@
 import type { Post, PostInput } from '../types/post';
+import { getDevSeedPosts } from './devSeedPosts';
 import {
   estimateReadingTime,
   getTodayIsoDate,
@@ -48,9 +49,16 @@ export function parseMarkdownPost(
   };
 }
 
-const REPO_POSTS: Post[] = Object.entries(rawRepoModules)
+const REAL_REPO_POSTS: Post[] = Object.entries(rawRepoModules)
   .map(([path, raw]) => parseMarkdownPost(path, raw, { source: 'repo' }))
   .sort((a, b) => b.date.localeCompare(a.date));
+
+// In local dev (`npm run dev`), show 10 rich sample posts when the repo has none.
+// `import.meta.env.DEV` is statically `false` in production builds so these are tree-shaken out.
+const REPO_POSTS: Post[] =
+  import.meta.env.DEV && REAL_REPO_POSTS.length === 0
+    ? getDevSeedPosts()
+    : REAL_REPO_POSTS;
 
 export function getBundledRepoPosts(): Post[] {
   return REPO_POSTS;

@@ -47,6 +47,7 @@ import {
 } from '../lib/github';
 import { AdminShell } from '../components/AdminShell';
 import { MarkdownRenderer } from '../components/MarkdownRenderer';
+import { NotionMarkdownEditor } from '../components/NotionMarkdownEditor';
 
 interface AdminEditorPageProps {
   session: AdminSession;
@@ -255,10 +256,45 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
   };
 
   const handleTextareaKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Tab') {
-      e.preventDefault();
+    if (e.key !== 'Tab') return;
+    e.preventDefault();
+    if (!e.shiftKey) {
       insertAtCursor('  ');
+      return;
     }
+    const el = e.currentTarget;
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    const lineStart = rawText.lastIndexOf('\n', start - 1) + 1;
+    const lineEndIdx = rawText.indexOf('\n', end);
+    const lineEnd = lineEndIdx === -1 ? rawText.length : lineEndIdx;
+    const lines = rawText.slice(lineStart, lineEnd).split('\n');
+    let removedFirst = 0;
+    let removedTotal = 0;
+    const outdented = lines
+      .map((line, idx) => {
+        if (line.startsWith('  ')) {
+          if (idx === 0) removedFirst = 2;
+          removedTotal += 2;
+          return line.slice(2);
+        }
+        if (line.startsWith('\t') || line.startsWith(' ')) {
+          if (idx === 0) removedFirst = 1;
+          removedTotal += 1;
+          return line.slice(1);
+        }
+        return line;
+      })
+      .join('\n');
+    if (removedTotal === 0) return;
+    const next = rawText.slice(0, lineStart) + outdented + rawText.slice(lineEnd);
+    setRawText(next);
+    window.requestAnimationFrame(() => {
+      const nextStart = Math.max(lineStart, start - removedFirst);
+      const nextEnd = Math.max(nextStart, end - removedTotal);
+      el.focus();
+      el.setSelectionRange(nextStart, nextEnd);
+    });
   };
 
   const setOrUpdateRawCoverDirective = (coverPath: string) => {
@@ -822,26 +858,15 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                     </div>
                   </div>
 
-                  {/* Body Writing Area */}
+                  {/* Body Writing Area (Notion-style `/` commands, Shift+Tab, shortcuts & selection bar) */}
                   <div className="mt-6 flex flex-1 flex-col border-t border-rule pt-6">
-                    <textarea
-                      ref={bodyTextareaRef}
+                    <NotionMarkdownEditor
+                      textareaRef={bodyTextareaRef}
                       value={fields.body}
-                      onChange={(e) => setFields((prev) => ({ ...prev, body: e.target.value }))}
-                      onKeyDown={handleTextareaKeyDown}
-                      onPaste={handlePaste}
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        setIsDraggingFile(true);
-                      }}
-                      onDragLeave={() => setIsDraggingFile(false)}
-                      onDrop={handleDrop}
-                      spellCheck
-                      placeholder="Write anything here... Markdown, code blocks, quotes, or paste an image directly."
-                      aria-label="Entry body"
-                      className={`min-h-[460px] w-full flex-1 resize-none bg-transparent text-[16px] leading-[1.82] text-ink-body placeholder:text-ink-3 focus:outline-none ${
-                        isDraggingFile ? 'rounded-[8px] bg-surface p-3 ring-2 ring-accent' : ''
-                      }`}
+                      onChange={(next) => setFields((prev) => ({ ...prev, body: next }))}
+                      onPasteImage={(file) => void handleUploadImage(file, 'inline')}
+                      onDropImage={(file) => void handleUploadImage(file, 'inline')}
+                      onRequestImageUpload={() => inlineImageInputRef.current?.click()}
                     />
                   </div>
                 </div>
