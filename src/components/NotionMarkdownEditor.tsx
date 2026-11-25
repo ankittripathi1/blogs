@@ -1,13 +1,23 @@
 import {
-  useCallback,
   useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type ClipboardEvent,
-  type DragEvent,
-  type KeyboardEvent,
+  type Ref,
 } from 'react';
+import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
+import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { languages } from '@codemirror/language-data';
+import { Compartment, Prec } from '@codemirror/state';
+import {
+  drawSelection,
+  EditorView,
+  keymap,
+  placeholder as placeholderExt,
+} from '@codemirror/view';
+import { getCM, vim, Vim } from '@replit/codemirror-vim';
 import {
   Bold,
   CheckSquare,
@@ -27,6 +37,16 @@ import {
   Table,
   type LucideIcon,
 } from 'lucide-react';
+import { indentLines, insertLink, replaceRange, togglePrefix, toggleWrap } from './editor/commands';
+import { livePreview, refreshImages } from './editor/livePreview';
+import { vimSurround } from './editor/vimSurround';
+
+/** Imperative handle the editor page uses for toolbar buttons and image uploads. */
+export interface MarkdownEditorHandle {
+  /** Replaces the selection with `text` and focuses the editor. */
+  insert: (text: string) => void;
+  focus: () => void;
+}
 
 interface NotionMarkdownEditorProps {
   value: string;
@@ -34,7 +54,13 @@ interface NotionMarkdownEditorProps {
   onPasteImage: (file: File) => void;
   onDropImage: (file: File) => void;
   onRequestImageUpload: () => void;
-  textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
+  /** Vim keys on or off. The page owns the switch so it can sit in the toolbar. */
+  vimEnabled: boolean;
+  /** Called by Vim's `:w`. */
+  onSave?: () => void;
+  /** Uploaded image paths mapped to local preview URLs, so new images show before deploy. */
+  imagePreviewMap?: Record<string, string>;
+  ref?: Ref<MarkdownEditorHandle>;
   placeholder?: string;
 }
 
@@ -45,823 +71,486 @@ interface SlashCommand {
   keywords: string[];
   badge: string;
   icon: LucideIcon;
-  action: 'insert' | 'image';
-  prefix?: string;
+  /** Text that replaces the "/query". Omitted for the image command. */
   snippet?: string;
-  cursorOffset?: number;
+  /** Caret position inside `snippet`. Defaults to the end. */
+  caret?: number;
 }
 
 const SLASH_COMMANDS: SlashCommand[] = [
-  {
-    id: 'h1',
-    label: 'Heading 1',
-    description: 'Large section heading',
-    keywords: ['h1', 'heading', 'title', '#'],
-    badge: '#',
-    icon: Heading1,
-    action: 'insert',
-    prefix: '# ',
-  },
-  {
-    id: 'h2',
-    label: 'Heading 2',
-    description: 'Main section (appears in post index)',
-    keywords: ['h2', 'heading', 'section', '##'],
-    badge: '##',
-    icon: Heading2,
-    action: 'insert',
-    prefix: '## ',
-  },
-  {
-    id: 'h3',
-    label: 'Heading 3',
-    description: 'Sub-section heading',
-    keywords: ['h3', 'heading', 'sub', '###'],
-    badge: '###',
-    icon: Heading3,
-    action: 'insert',
-    prefix: '### ',
-  },
-  {
-    id: 'bullet',
-    label: 'Bulleted list',
-    description: 'Simple bullet list',
-    keywords: ['ul', 'bullet', 'list', '-'],
-    badge: '-',
-    icon: List,
-    action: 'insert',
-    prefix: '- ',
-  },
-  {
-    id: 'numbered',
-    label: 'Numbered list',
-    description: 'Ordered step list',
-    keywords: ['ol', 'number', 'ordered', 'list', '1.'],
-    badge: '1.',
-    icon: ListOrdered,
-    action: 'insert',
-    prefix: '1. ',
-  },
-  {
-    id: 'checklist',
-    label: 'To-do list',
-    description: 'Markdown task checkbox',
-    keywords: ['todo', 'check', 'task', 'checkbox'],
-    badge: '[ ]',
-    icon: CheckSquare,
-    action: 'insert',
-    prefix: '- [ ] ',
-  },
-  {
-    id: 'quote',
-    label: 'Quote',
-    description: 'Callout or blockquote',
-    keywords: ['quote', 'blockquote', 'callout', '>'],
-    badge: '>',
-    icon: Quote,
-    action: 'insert',
-    prefix: '> ',
-  },
-  {
-    id: 'codeblock',
-    label: 'Code block',
-    description: 'Syntax-highlighted code snippet',
-    keywords: ['code', 'snippet', 'ts', 'js', 'pre', '```'],
-    badge: '```',
-    icon: Code2,
-    action: 'insert',
-    snippet: '```ts\n\n```',
-    cursorOffset: 6,
-  },
-  {
-    id: 'inline-code',
-    label: 'Inline code',
-    description: 'Monospace code span',
-    keywords: ['inline', 'code', 'mono', '`'],
-    badge: '` `',
-    icon: Code,
-    action: 'insert',
-    snippet: '``',
-    cursorOffset: 1,
-  },
-  {
-    id: 'image',
-    label: 'Image',
-    description: 'Upload or insert an image',
-    keywords: ['image', 'img', 'photo', 'picture', 'upload'],
-    badge: 'img',
-    icon: ImagePlus,
-    action: 'image',
-  },
-  {
-    id: 'table',
-    label: 'Table',
-    description: 'Two-column Markdown table',
-    keywords: ['table', 'grid', 'columns'],
-    badge: '| |',
-    icon: Table,
-    action: 'insert',
-    snippet: '| Column 1 | Column 2 |\n| --- | --- |\n| Value | Value |',
-    cursorOffset: 2,
-  },
-  {
-    id: 'divider',
-    label: 'Divider',
-    description: 'Horizontal section rule',
-    keywords: ['divider', 'hr', 'line', 'rule', '---'],
-    badge: '---',
-    icon: Minus,
-    action: 'insert',
-    snippet: '---\n\n',
-    cursorOffset: 5,
-  },
+  { id: 'h1', label: 'Heading 1', description: 'Large section heading', keywords: ['h1', 'heading', 'title'], badge: '#', icon: Heading1, snippet: '# ' },
+  { id: 'h2', label: 'Heading 2', description: 'Section, shows in the post index', keywords: ['h2', 'heading', 'section'], badge: '##', icon: Heading2, snippet: '## ' },
+  { id: 'h3', label: 'Heading 3', description: 'Sub-section heading', keywords: ['h3', 'heading', 'sub'], badge: '###', icon: Heading3, snippet: '### ' },
+  { id: 'bullet', label: 'Bulleted list', description: 'Simple bullet list', keywords: ['ul', 'bullet', 'list'], badge: '-', icon: List, snippet: '- ' },
+  { id: 'numbered', label: 'Numbered list', description: 'Ordered step list', keywords: ['ol', 'number', 'ordered', 'list'], badge: '1.', icon: ListOrdered, snippet: '1. ' },
+  { id: 'todo', label: 'To-do list', description: 'Checkbox you can tick', keywords: ['todo', 'check', 'task', 'checkbox'], badge: '[ ]', icon: CheckSquare, snippet: '- [ ] ' },
+  { id: 'quote', label: 'Quote', description: 'Callout or blockquote', keywords: ['quote', 'blockquote', 'callout'], badge: '>', icon: Quote, snippet: '> ' },
+  { id: 'code', label: 'Code block', description: 'Highlighted code snippet', keywords: ['code', 'snippet', 'pre', 'fence'], badge: '```', icon: Code2, snippet: '```ts\n\n```', caret: 6 },
+  { id: 'inline', label: 'Inline code', description: 'Monospace code span', keywords: ['inline', 'code', 'mono'], badge: '` `', icon: Code, snippet: '``', caret: 1 },
+  { id: 'image', label: 'Image', description: 'Upload or insert an image', keywords: ['image', 'img', 'photo', 'picture', 'upload'], badge: 'img', icon: ImagePlus },
+  { id: 'table', label: 'Table', description: 'Two-column table', keywords: ['table', 'grid', 'columns'], badge: '| |', icon: Table, snippet: '| Column 1 | Column 2 |\n| --- | --- |\n| Value | Value |', caret: 2 },
+  { id: 'divider', label: 'Divider', description: 'Horizontal rule', keywords: ['divider', 'hr', 'line', 'rule'], badge: '---', icon: Minus, snippet: '---\n' },
 ];
 
-// Measure pixel coordinates of a character index inside a textarea relative to the textarea's top-left.
-function getCaretCoordinates(
-  textarea: HTMLTextAreaElement,
-  position: number,
-): { top: number; left: number; lineHeight: number } {
-  const style = window.getComputedStyle(textarea);
-  const mirror = document.createElement('div');
-  const props = [
-    'direction',
-    'boxSizing',
-    'width',
-    'overflowX',
-    'overflowY',
-    'borderTopWidth',
-    'borderRightWidth',
-    'borderBottomWidth',
-    'borderLeftWidth',
-    'paddingTop',
-    'paddingRight',
-    'paddingBottom',
-    'paddingLeft',
-    'fontStyle',
-    'fontVariant',
-    'fontWeight',
-    'fontStretch',
-    'fontSize',
-    'lineHeight',
-    'fontFamily',
-    'textAlign',
-    'textTransform',
-    'textIndent',
-    'letterSpacing',
-    'wordSpacing',
-    'tabSize',
-  ] as const;
+const MENU_WIDTH = 288;
+const MENU_MAX_HEIGHT = 320;
 
-  mirror.style.position = 'fixed';
-  mirror.style.visibility = 'hidden';
-  mirror.style.pointerEvents = 'none';
-  mirror.style.whiteSpace = 'pre-wrap';
-  mirror.style.wordWrap = 'break-word';
-  mirror.style.top = '0';
-  mirror.style.left = '-9999px';
-
-  for (const prop of props) {
-    mirror.style[prop] = style[prop];
-  }
-
-  mirror.textContent = textarea.value.slice(0, position);
-  const marker = document.createElement('span');
-  marker.textContent = textarea.value.slice(position, position + 1) || '.';
-  mirror.appendChild(marker);
-  document.body.appendChild(mirror);
-
-  const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.6 || 26;
-  const top = marker.offsetTop - textarea.scrollTop;
-  const left = marker.offsetLeft - textarea.scrollLeft;
-
-  document.body.removeChild(mirror);
-  return { top, left, lineHeight };
+function inVimNormalMode(view: EditorView) {
+  const state = getCM(view)?.state.vim;
+  return Boolean(state && !state.insertMode);
 }
 
+interface MenuState {
+  open: boolean;
+  query: string;
+  /** Position of the "/" that opened the menu. */
+  from: number;
+  top: number;
+  left: number;
+  above: boolean;
+}
+
+const CLOSED_MENU: MenuState = { open: false, query: '', from: 0, top: 0, left: 0, above: false };
+
+// `:w` saves the post. Vim ex commands are global, so it calls whichever editor set it last.
+let saveFromVim: (() => void) | undefined;
+Vim.defineEx('write', 'w', () => saveFromVim?.());
+// `:wq` and `:x` also just save: there is nothing to quit in a browser tab.
+Vim.defineEx('wq', 'wq', () => saveFromVim?.());
+Vim.defineEx('xit', 'x', () => saveFromVim?.());
+
+/**
+ * Markdown editor with live preview, `/` commands, a selection toolbar and an optional Vim mode.
+ * The value stays plain Markdown, so posts keep the same file format.
+ */
 export function NotionMarkdownEditor({
   value,
   onChange,
   onPasteImage,
   onDropImage,
   onRequestImageUpload,
-  textareaRef: externalRef,
-  placeholder = "Type '/' for commands, or start writing...",
+  onSave,
+  vimEnabled,
+  imagePreviewMap,
+  ref,
+  placeholder = "Type '/' for commands, or just start writing...",
 }: NotionMarkdownEditorProps) {
-  const internalRef = useRef<HTMLTextAreaElement>(null);
-  const textareaRef = externalRef ?? internalRef;
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<EditorView | null>(null);
+  const vimCompartment = useRef(new Compartment()).current;
 
-  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [menu, setMenu] = useState<MenuState>(CLOSED_MENU);
+  const [menuIndex, setMenuIndex] = useState(0);
+  const [bubble, setBubble] = useState({ open: false, top: 0, left: 0 });
+  const [dragging, setDragging] = useState(false);
 
-  // Slash command menu state
-  const [slashMenu, setSlashMenu] = useState<{
-    open: boolean;
-    query: string;
-    triggerStart: number;
-    top: number;
-    left: number;
-  }>({
-    open: false,
-    query: '',
-    triggerStart: 0,
-    top: 0,
-    left: 0,
-  });
-  const [slashIndex, setSlashIndex] = useState(0);
-
-  // Selection floating formatting toolbar state
-  const [bubble, setBubble] = useState<{
-    open: boolean;
-    top: number;
-    left: number;
-  }>({
-    open: false,
-    top: 0,
-    left: 0,
-  });
-
-  const filteredCommands = useMemo(() => {
-    const q = slashMenu.query.trim().toLowerCase();
+  const filtered = useMemo(() => {
+    const q = menu.query.toLowerCase();
     if (!q) return SLASH_COMMANDS;
     return SLASH_COMMANDS.filter(
-      (cmd) =>
-        cmd.label.toLowerCase().includes(q) ||
-        cmd.description.toLowerCase().includes(q) ||
-        cmd.keywords.some((k) => k.includes(q)),
+      (c) => c.label.toLowerCase().includes(q) || c.keywords.some((k) => k.startsWith(q)),
     );
-  }, [slashMenu.query]);
+  }, [menu.query]);
 
+  // CodeMirror keymaps are created once, so they read the latest values through this ref.
+  const live = useRef({ menu, menuIndex, filtered, onChange, onPasteImage, onDropImage, onRequestImageUpload, onSave });
+  live.current = { menu, menuIndex, filtered, onChange, onPasteImage, onDropImage, onRequestImageUpload, onSave };
+  saveFromVim = onSave;
+
+  // Image paths in the doc -> URLs. Read through a ref so the editor never needs rebuilding.
+  const imageMap = useRef(imagePreviewMap);
+  imageMap.current = imagePreviewMap;
   useEffect(() => {
-    setSlashIndex(0);
-  }, [slashMenu.query, slashMenu.open]);
+    viewRef.current?.dispatch({ effects: refreshImages.of(null) });
+  }, [imagePreviewMap]);
 
-  const setValueAndSelection = useCallback(
-    (nextValue: string, selStart: number, selEnd = selStart) => {
-      onChange(nextValue);
-      window.requestAnimationFrame(() => {
-        const el = textareaRef.current;
-        if (!el) return;
-        el.focus();
-        el.setSelectionRange(selStart, selEnd);
-      });
-    },
-    [onChange, textareaRef],
-  );
+  // The "/" stays closed after Esc until the user types again.
+  const dismissed = useRef(false);
 
-  // Wrap or unwrap selected text with Markdown delimiters (e.g. **, *, `, ~~)
-  const toggleInlineFormat = useCallback(
-    (before: string, after = before, placeholderText = '') => {
-      const el = textareaRef.current;
-      if (!el) return;
-      const start = el.selectionStart;
-      const end = el.selectionEnd;
-      const selected = value.slice(start, end);
+  useEffect(() => setMenuIndex(0), [menu.query, menu.open]);
 
-      // If already wrapped right outside selection, unwrap cleanly
-      const pre = value.slice(Math.max(0, start - before.length), start);
-      const post = value.slice(end, end + after.length);
-      if (pre === before && post === after) {
-        const next =
-          value.slice(0, start - before.length) +
-          selected +
-          value.slice(end + after.length);
-        setValueAndSelection(next, start - before.length, end - before.length);
-        setBubble((prev) => ({ ...prev, open: false }));
-        return;
-      }
-
-      // If selection itself starts/ends with markers, unwrap
-      if (
-        selected.length >= before.length + after.length &&
-        selected.startsWith(before) &&
-        selected.endsWith(after)
-      ) {
-        const inner = selected.slice(before.length, selected.length - after.length);
-        const next = value.slice(0, start) + inner + value.slice(end);
-        setValueAndSelection(next, start, start + inner.length);
-        setBubble((prev) => ({ ...prev, open: false }));
-        return;
-      }
-
-      const content = selected || placeholderText;
-      const next = value.slice(0, start) + before + content + after + value.slice(end);
-      setValueAndSelection(
-        next,
-        start + before.length,
-        start + before.length + content.length,
-      );
-      setBubble((prev) => ({ ...prev, open: false }));
-    },
-    [value, setValueAndSelection, textareaRef],
-  );
-
-  const insertLink = useCallback(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-    const selected = value.slice(start, end) || 'link text';
-    const url = 'https://';
-    const inserted = `[${selected}](${url})`;
-    const next = value.slice(0, start) + inserted + value.slice(end);
-    const urlStart = start + selected.length + 3;
-    setValueAndSelection(next, urlStart, urlStart + url.length);
-    setBubble((prev) => ({ ...prev, open: false }));
-  }, [value, setValueAndSelection, textareaRef]);
-
-  const prefixSelectedLines = useCallback(
-    (prefix: string) => {
-      const el = textareaRef.current;
-      if (!el) return;
-      const start = el.selectionStart;
-      const end = el.selectionEnd;
-      const lineStart = value.lastIndexOf('\n', start - 1) + 1;
-      const lineEndIdx = value.indexOf('\n', end);
-      const lineEnd = lineEndIdx === -1 ? value.length : lineEndIdx;
-      const block = value.slice(lineStart, lineEnd);
-      const lines = block.split('\n');
-      const allPrefixed = lines.every((l) => l.startsWith(prefix));
-      const updated = lines
-        .map((l) => (allPrefixed ? l.slice(prefix.length) : `${prefix}${l}`))
-        .join('\n');
-      const next = value.slice(0, lineStart) + updated + value.slice(lineEnd);
-      setValueAndSelection(next, lineStart, lineStart + updated.length);
-      setBubble((prev) => ({ ...prev, open: false }));
-    },
-    [value, setValueAndSelection, textareaRef],
-  );
-
-  // Detect `/` slash command trigger at caret
-  const updateSlashState = useCallback(
-    (text: string, caret: number) => {
-      const el = textareaRef.current;
-      if (!el) return;
-
-      const lineStart = text.lastIndexOf('\n', caret - 1) + 1;
-      const lineBeforeCaret = text.slice(lineStart, caret);
-      const match = lineBeforeCaret.match(/(?:^|\s)\/([a-zA-Z0-9-]*)$/);
-
-      if (!match) {
-        setSlashMenu((prev) => (prev.open ? { ...prev, open: false } : prev));
-        return;
-      }
-
-      const query = match[1];
-      const triggerStart = caret - query.length - 1;
-      const coords = getCaretCoordinates(el, caret);
-      const menuWidth = 264;
-      const maxLeft = Math.max(8, el.clientWidth - menuWidth - 8);
-
-      setSlashMenu({
-        open: true,
-        query,
-        triggerStart,
-        top: Math.max(8, coords.top + coords.lineHeight + 6),
-        left: Math.min(Math.max(8, coords.left), maxLeft),
-      });
-    },
-    [textareaRef],
-  );
-
-  // Detect text selection for floating formatting bubble
-  const updateSelectionBubble = useCallback(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-
-    if (end - start <= 0) {
-      setBubble((prev) => (prev.open ? { ...prev, open: false } : prev));
+  const runCommand = (cmd: SlashCommand) => {
+    const view = viewRef.current;
+    if (!view) return;
+    const { from } = live.current.menu;
+    const to = view.state.selection.main.head;
+    setMenu(CLOSED_MENU);
+    if (!cmd.snippet) {
+      replaceRange(view, from, to, '');
+      live.current.onRequestImageUpload();
       return;
     }
+    replaceRange(view, from, to, cmd.snippet, cmd.caret);
+  };
+  const runCommandRef = useRef(runCommand);
+  runCommandRef.current = runCommand;
 
-    const coords = getCaretCoordinates(el, start);
-    const bubbleWidth = 236;
-    const maxLeft = Math.max(8, el.clientWidth - bubbleWidth - 8);
-    setBubble({
-      open: true,
-      top: Math.max(4, coords.top - 46),
-      left: Math.min(Math.max(8, coords.left), maxLeft),
+  // Create the CodeMirror view once.
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    const wrapper = wrapperRef.current;
+    if (!host || !wrapper) return;
+
+    const updateMenu = (view: EditorView, docChanged: boolean) => {
+      if (docChanged) dismissed.current = false;
+      const sel = view.state.selection.main;
+      const lineObj = view.state.doc.lineAt(sel.head);
+      const before = view.state.sliceDoc(lineObj.from, sel.head);
+      const match = sel.empty && !dismissed.current && !inVimNormalMode(view)
+        ? before.match(/(?:^|\s)\/([a-zA-Z0-9-]*)$/)
+        : null;
+      if (!match) {
+        setMenu((m) => (m.open ? CLOSED_MENU : m));
+        return;
+      }
+      const coords = view.coordsAtPos(sel.head);
+      if (!coords) return;
+      const box = wrapper.getBoundingClientRect();
+      const above = coords.bottom + MENU_MAX_HEIGHT + 16 > window.innerHeight && coords.top > MENU_MAX_HEIGHT + 16;
+      setMenu({
+        open: true,
+        query: match[1],
+        from: sel.head - match[1].length - 1,
+        top: above ? coords.top - box.top - 6 : coords.bottom - box.top + 6,
+        left: Math.min(Math.max(0, coords.left - box.left - 4), Math.max(0, box.width - MENU_WIDTH)),
+        above,
+      });
+    };
+
+    const updateBubble = (view: EditorView) => {
+      const sel = view.state.selection.main;
+      if (sel.empty || !view.hasFocus) {
+        setBubble((b) => (b.open ? { ...b, open: false } : b));
+        return;
+      }
+      const start = view.coordsAtPos(sel.from);
+      if (!start) return;
+      const box = wrapper.getBoundingClientRect();
+      setBubble({
+        open: true,
+        top: start.top - box.top - 44,
+        left: Math.min(Math.max(0, start.left - box.left), Math.max(0, box.width - 236)),
+      });
+    };
+
+    // Moves the active row in the / menu. Returns false when the menu is closed so the key
+    // keeps its normal meaning.
+    const moveMenu = (step: 1 | -1) => () => {
+      const { menu: m, filtered: f } = live.current;
+      if (!m.open || !f.length) return false;
+      setMenuIndex((i) => (i + step + f.length) % f.length);
+      return true;
+    };
+
+    const menuKeys = Prec.highest(
+      keymap.of([
+        { key: 'ArrowDown', run: moveMenu(1) },
+        { key: 'ArrowUp', run: moveMenu(-1) },
+        // Ctrl+N / Ctrl+P, like menus in Vim and the terminal. `mac` keeps it Ctrl, not Cmd.
+        { key: 'Ctrl-n', mac: 'Ctrl-n', run: moveMenu(1) },
+        { key: 'Ctrl-p', mac: 'Ctrl-p', run: moveMenu(-1) },
+        ...['Enter', 'Tab'].map((key) => ({
+          key,
+          run: () => {
+            const { menu: m, filtered: f, menuIndex: i } = live.current;
+            if (!m.open || !f[i]) return false;
+            runCommandRef.current(f[i]);
+            return true;
+          },
+        })),
+        {
+          key: 'Escape',
+          run: () => {
+            if (!live.current.menu.open) return false;
+            dismissed.current = true;
+            setMenu(CLOSED_MENU);
+            return true;
+          },
+        },
+      ]),
+    );
+
+    const view = new EditorView({
+      parent: host,
+      doc: value,
+      extensions: [
+        menuKeys,
+        vimCompartment.of(vimEnabled ? [vimSurround(), vim({ status: true })] : []),
+        keymap.of([
+          { key: 'Mod-b', run: (v) => toggleWrap(v, '**', '**', 'bold text') },
+          { key: 'Mod-i', run: (v) => toggleWrap(v, '*', '*', 'italic text') },
+          { key: 'Mod-e', run: (v) => toggleWrap(v, '`', '`', 'code') },
+          { key: 'Mod-Shift-s', run: (v) => toggleWrap(v, '~~', '~~', 'strikethrough') },
+          { key: 'Mod-k', run: insertLink },
+          { key: 'Tab', run: (v) => indentLines(v, 1) },
+          { key: 'Shift-Tab', run: (v) => indentLines(v, -1) },
+        ]),
+        history(),
+        drawSelection(),
+        // Code fence languages load on demand, only when a post uses them.
+        markdown({ base: markdownLanguage, codeLanguages: languages }),
+        livePreview((src) => {
+          const mapped = imageMap.current?.[src];
+          if (mapped) return mapped;
+          return src.startsWith('./') ? `${import.meta.env.BASE_URL}${src.slice(2)}` : src;
+        }),
+        keymap.of([...defaultKeymap, ...historyKeymap]),
+        EditorView.lineWrapping,
+        placeholderExt(placeholder),
+        EditorView.contentAttributes.of({ spellcheck: 'true', 'aria-label': 'Entry body' }),
+        // Typing a marker over selected text wraps it instead of replacing it.
+        EditorView.inputHandler.of((v, from, to, text) => {
+          const pairs: Record<string, [string, string]> = {
+            '*': ['*', '*'], '_': ['_', '_'], '`': ['`', '`'], '~': ['~~', '~~'],
+            '"': ['"', '"'], '(': ['(', ')'], '[': ['[', ']'],
+          };
+          if (from === to || !pairs[text] || v.state.selection.ranges.length > 1) return false;
+          return toggleWrap(v, ...pairs[text]);
+        }),
+        EditorView.domEventHandlers({
+          paste(e) {
+            const file = Array.from(e.clipboardData?.files ?? []).find((f) => f.type.startsWith('image/'));
+            if (!file) return false;
+            e.preventDefault();
+            live.current.onPasteImage(file);
+            return true;
+          },
+          drop(e) {
+            setDragging(false);
+            const file = Array.from(e.dataTransfer?.files ?? []).find((f) => f.type.startsWith('image/'));
+            if (!file) return false;
+            e.preventDefault();
+            live.current.onDropImage(file);
+            return true;
+          },
+          dragover(e) {
+            if (e.dataTransfer?.types.includes('Files')) setDragging(true);
+            return false;
+          },
+          dragleave() {
+            setDragging(false);
+            return false;
+          },
+        }),
+        EditorView.updateListener.of((u) => {
+          if (u.docChanged) live.current.onChange(u.state.doc.toString());
+          if (u.docChanged || u.selectionSet || u.focusChanged) {
+            updateMenu(u.view, u.docChanged);
+            updateBubble(u.view);
+          }
+        }),
+      ],
     });
-  }, [textareaRef]);
+    viewRef.current = view;
 
-  const executeSlashCommand = useCallback(
-    (cmd: SlashCommand) => {
-      const el = textareaRef.current;
-      if (!el) return;
-      const caret = el.selectionStart;
-      const beforeTrigger = value.slice(0, slashMenu.triggerStart);
-      const afterCaret = value.slice(caret);
+    // Vim mode changes (i, Esc) don't touch the doc or selection, so re-check the menu then.
+    const cm = getCM(view);
+    const onModeChange = () => updateMenu(view, false);
+    cm?.on('vim-mode-change', onModeChange);
 
-      setSlashMenu((prev) => ({ ...prev, open: false }));
+    return () => {
+      cm?.off('vim-mode-change', onModeChange);
+      view.destroy();
+      viewRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-      if (cmd.action === 'image') {
-        const cleaned = beforeTrigger + afterCaret;
-        setValueAndSelection(cleaned, beforeTrigger.length);
-        onRequestImageUpload();
-        return;
-      }
+  // Keep the editor in sync when the parent swaps in another post.
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view || view.state.doc.toString() === value) return;
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
+  }, [value]);
 
-      if (cmd.prefix) {
-        const next = beforeTrigger + cmd.prefix + afterCaret;
-        setValueAndSelection(next, beforeTrigger.length + cmd.prefix.length);
-        return;
-      }
+  // Turn Vim on or off without recreating the editor. Skips the first run: the editor was
+  // just built with the right setting, and focusing it on page load would be surprising.
+  const vimMounted = useRef(false);
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    if (!vimMounted.current) {
+      vimMounted.current = true;
+      return;
+    }
+    view.dispatch({
+      effects: vimCompartment.reconfigure(vimEnabled ? [vimSurround(), vim({ status: true })] : []),
+    });
+    view.focus();
+  }, [vimEnabled, vimCompartment]);
 
-      if (cmd.snippet) {
-        const next = beforeTrigger + cmd.snippet + afterCaret;
-        const offset = cmd.cursorOffset ?? cmd.snippet.length;
-        setValueAndSelection(next, beforeTrigger.length + offset);
-      }
+  useImperativeHandle(ref, () => ({
+    insert(text) {
+      const view = viewRef.current;
+      if (!view) return;
+      const { from, to } = view.state.selection.main;
+      replaceRange(view, from, to, text);
     },
-    [value, slashMenu.triggerStart, setValueAndSelection, onRequestImageUpload, textareaRef],
-  );
+    focus() {
+      viewRef.current?.focus();
+    },
+  }));
 
-  // Close popovers when clicking outside
+  // Close the menu and bubble when clicking outside the editor.
   useEffect(() => {
     const onPointerDown = (e: MouseEvent) => {
-      if (!wrapperRef.current?.contains(e.target as Node)) {
-        setSlashMenu((prev) => (prev.open ? { ...prev, open: false } : prev));
-        setBubble((prev) => (prev.open ? { ...prev, open: false } : prev));
-      }
+      if (wrapperRef.current?.contains(e.target as Node)) return;
+      setMenu((m) => (m.open ? CLOSED_MENU : m));
+      setBubble((b) => (b.open ? { ...b, open: false } : b));
     };
     window.addEventListener('mousedown', onPointerDown);
     return () => window.removeEventListener('mousedown', onPointerDown);
   }, []);
 
-  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    const el = e.currentTarget;
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-
-    // 1. Slash command navigation
-    if (slashMenu.open) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setSlashIndex((i) =>
-          filteredCommands.length > 0 ? (i + 1) % filteredCommands.length : 0,
-        );
-        return;
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSlashIndex((i) =>
-          filteredCommands.length > 0
-            ? (i - 1 + filteredCommands.length) % filteredCommands.length
-            : 0,
-        );
-        return;
-      }
-      if ((e.key === 'Enter' || e.key === 'Tab') && filteredCommands[slashIndex]) {
-        e.preventDefault();
-        executeSlashCommand(filteredCommands[slashIndex]);
-        return;
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        setSlashMenu((prev) => ({ ...prev, open: false }));
-        return;
-      }
+  // Keep the active row visible while moving with the arrow keys.
+  const listRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const [highlight, setHighlight] = useState({ top: 0, height: 0 });
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const item = itemRefs.current[menuIndex];
+    if (!menu.open || !list || !item) return;
+    setHighlight({ top: item.offsetTop, height: item.offsetHeight });
+    const pad = 6;
+    if (item.offsetTop < list.scrollTop + pad) {
+      list.scrollTo({ top: item.offsetTop - pad, behavior: 'smooth' });
+    } else if (item.offsetTop + item.offsetHeight > list.scrollTop + list.clientHeight - pad) {
+      list.scrollTo({ top: item.offsetTop + item.offsetHeight - list.clientHeight + pad, behavior: 'smooth' });
     }
+  }, [menuIndex, menu.open, filtered]);
 
-    // 2. Tab & Shift+Tab (indent / outdent single line or multi-line selection)
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      const indent = '  ';
-      const lineStart = value.lastIndexOf('\n', start - 1) + 1;
-      const hasMultiLineSelection = start !== end && value.slice(start, end).includes('\n');
+  // Reset scroll each time the menu opens.
+  useLayoutEffect(() => {
+    if (menu.open && listRef.current) listRef.current.scrollTop = 0;
+  }, [menu.open]);
 
-      if (e.shiftKey) {
-        const lineEndIdx = value.indexOf('\n', end);
-        const lineEnd = lineEndIdx === -1 ? value.length : lineEndIdx;
-        const block = value.slice(lineStart, lineEnd);
-        const lines = block.split('\n');
-
-        let removedFirst = 0;
-        let removedTotal = 0;
-        const outdented = lines
-          .map((line, idx) => {
-            if (line.startsWith('  ')) {
-              if (idx === 0) removedFirst = 2;
-              removedTotal += 2;
-              return line.slice(2);
-            }
-            if (line.startsWith('\t') || line.startsWith(' ')) {
-              if (idx === 0) removedFirst = 1;
-              removedTotal += 1;
-              return line.slice(1);
-            }
-            return line;
-          })
-          .join('\n');
-
-        if (removedTotal === 0) return;
-
-        const next = value.slice(0, lineStart) + outdented + value.slice(lineEnd);
-        const nextStart = Math.max(lineStart, start - removedFirst);
-        const nextEnd = Math.max(nextStart, end - removedTotal);
-        setValueAndSelection(next, nextStart, nextEnd);
-        return;
-      }
-
-      if (hasMultiLineSelection) {
-        const lineEndIdx = value.indexOf('\n', end);
-        const lineEnd = lineEndIdx === -1 ? value.length : lineEndIdx;
-        const block = value.slice(lineStart, lineEnd);
-        const lines = block.split('\n');
-        const indented = lines.map((line) => `${indent}${line}`).join('\n');
-        const next = value.slice(0, lineStart) + indented + value.slice(lineEnd);
-        setValueAndSelection(next, start + indent.length, end + indent.length * lines.length);
-        return;
-      }
-
-      // Single caret or single-line selection: insert 2 spaces at caret (or indent list item cleanly)
-      const currentLine = value.slice(lineStart, start);
-      if (/^\s*([-*+]|\d+\.)\s+$/.test(currentLine) && start === end) {
-        const next = value.slice(0, lineStart) + indent + value.slice(lineStart);
-        setValueAndSelection(next, start + indent.length);
-        return;
-      }
-
-      const next = value.slice(0, start) + indent + value.slice(end);
-      setValueAndSelection(next, start + indent.length);
-      return;
-    }
-
-    // 3. Smart Enter: continue bullet, numbered, checklist, or quote lines
-    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && start === end) {
-      const lineStart = value.lastIndexOf('\n', start - 1) + 1;
-      const line = value.slice(lineStart, start);
-
-      // Checklist: `- [ ] item` or `- [x] item`
-      const checkMatch = line.match(/^(\s*-\s+\[[ xX]\]\s+)(.*)$/);
-      if (checkMatch) {
-        e.preventDefault();
-        if (!checkMatch[2].trim()) {
-          // Exit empty checklist item
-          const next = value.slice(0, lineStart) + value.slice(start);
-          setValueAndSelection(next, lineStart);
-        } else {
-          const prefix = checkMatch[1].replace(/\[[xX]\]/, '[ ]');
-          const next = value.slice(0, start) + '\n' + prefix + value.slice(end);
-          setValueAndSelection(next, start + 1 + prefix.length);
-        }
-        return;
-      }
-
-      // Bullet list: `- item` or `* item`
-      const bulletMatch = line.match(/^(\s*[-*]\s+)(.*)$/);
-      if (bulletMatch) {
-        e.preventDefault();
-        if (!bulletMatch[2].trim()) {
-          const next = value.slice(0, lineStart) + value.slice(start);
-          setValueAndSelection(next, lineStart);
-        } else {
-          const next = value.slice(0, start) + '\n' + bulletMatch[1] + value.slice(end);
-          setValueAndSelection(next, start + 1 + bulletMatch[1].length);
-        }
-        return;
-      }
-
-      // Numbered list: `1. item`
-      const numMatch = line.match(/^(\s*)(\d+)\.\s+(.*)$/);
-      if (numMatch) {
-        e.preventDefault();
-        if (!numMatch[3].trim()) {
-          const next = value.slice(0, lineStart) + value.slice(start);
-          setValueAndSelection(next, lineStart);
-        } else {
-          const nextNum = `${numMatch[1]}${Number(numMatch[2]) + 1}. `;
-          const next = value.slice(0, start) + '\n' + nextNum + value.slice(end);
-          setValueAndSelection(next, start + 1 + nextNum.length);
-        }
-        return;
-      }
-
-      // Blockquote: `> text`
-      const quoteMatch = line.match(/^(\s*>\s+)(.*)$/);
-      if (quoteMatch) {
-        e.preventDefault();
-        if (!quoteMatch[2].trim()) {
-          const next = value.slice(0, lineStart) + value.slice(start);
-          setValueAndSelection(next, lineStart);
-        } else {
-          const next = value.slice(0, start) + '\n' + quoteMatch[1] + value.slice(end);
-          setValueAndSelection(next, start + 1 + quoteMatch[1].length);
-        }
-        return;
-      }
-    }
-
-    // 4. Keyboard formatting shortcuts (Cmd/Ctrl + B, I, E, K, Shift+S)
-    if (e.metaKey || e.ctrlKey) {
-      const key = e.key.toLowerCase();
-      if (key === 'b') {
-        e.preventDefault();
-        toggleInlineFormat('**', '**', 'bold text');
-        return;
-      }
-      if (key === 'i') {
-        e.preventDefault();
-        toggleInlineFormat('*', '*', 'italic text');
-        return;
-      }
-      if (key === 'e') {
-        e.preventDefault();
-        toggleInlineFormat('`', '`', 'code');
-        return;
-      }
-      if (key === 'k') {
-        e.preventDefault();
-        insertLink();
-        return;
-      }
-      if (e.shiftKey && key === 's') {
-        e.preventDefault();
-        toggleInlineFormat('~~', '~~', 'strikethrough');
-        return;
-      }
-    }
-
-    // 5. Smart wrap when text is selected and user types `, *, ~, ", (, [
-    if (start !== end && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      const pairMap: Record<string, [string, string]> = {
-        '`': ['`', '`'],
-        '*': ['*', '*'],
-        '~': ['~~', '~~'],
-        '"': ['"', '"'],
-        '(': ['(', ')'],
-        '[': ['[', ']'],
-      };
-      const pair = pairMap[e.key];
-      if (pair) {
-        e.preventDefault();
-        toggleInlineFormat(pair[0], pair[1]);
-      }
-    }
+  const format = (fn: (v: EditorView) => void) => () => {
+    const view = viewRef.current;
+    if (view) fn(view);
   };
 
-  const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
-    const items = Array.from(e.clipboardData.items);
-    const imageItem = items.find((i) => i.type.startsWith('image/'));
-    if (!imageItem) return;
-    const file = imageItem.getAsFile();
-    if (!file) return;
-    e.preventDefault();
-    onPasteImage(file);
-  };
-
-  const handleDrop = (e: DragEvent<HTMLTextAreaElement>) => {
-    e.preventDefault();
-    setIsDraggingFile(false);
-    const file = Array.from(e.dataTransfer.files).find((f) => f.type.startsWith('image/'));
-    if (file) {
-      onDropImage(file);
-    }
-  };
+  const bubbleActions = [
+    { label: 'Bold (⌘B)', icon: Bold, run: format((v) => toggleWrap(v, '**')) },
+    { label: 'Italic (⌘I)', icon: Italic, run: format((v) => toggleWrap(v, '*')) },
+    { label: 'Inline code (⌘E)', icon: Code, run: format((v) => toggleWrap(v, '`')) },
+    { label: 'Strikethrough (⌘⇧S)', icon: Strikethrough, run: format((v) => toggleWrap(v, '~~')) },
+    { label: 'Quote', icon: Quote, run: format((v) => togglePrefix(v, '> ')) },
+    { label: 'Link (⌘K)', icon: Link2, run: format(insertLink) },
+  ];
 
   return (
     <div ref={wrapperRef} className="relative flex flex-1 flex-col">
-      {/* Floating Notion-style Selection Bubble Toolbar */}
+      {/* Selection toolbar */}
       <div
-        role="toolbar"
-        aria-label="Text formatting"
-        style={{
-          transform: `translate3d(${bubble.left}px, ${bubble.top}px, 0)`,
-        }}
-        className={`toast-surface absolute left-0 top-0 z-30 flex items-center gap-0.5 rounded-[10px] border border-rule-strong bg-card p-1 ${
-          bubble.open && !slashMenu.open
-            ? 'opacity-100'
-            : 'pointer-events-none opacity-0'
-        }`}
+        className="pointer-events-none absolute left-0 top-0 z-30"
+        style={{ top: bubble.top, left: bubble.left }}
       >
-        {[
-          { label: 'Bold (⌘B)', icon: Bold, onClick: () => toggleInlineFormat('**') },
-          { label: 'Italic (⌘I)', icon: Italic, onClick: () => toggleInlineFormat('*') },
-          { label: 'Inline code (⌘E)', icon: Code, onClick: () => toggleInlineFormat('`') },
-          {
-            label: 'Strikethrough (⌘⇧S)',
-            icon: Strikethrough,
-            onClick: () => toggleInlineFormat('~~'),
-          },
-          { label: 'Quote', icon: Quote, onClick: () => prefixSelectedLines('> ') },
-          { label: 'Link (⌘K)', icon: Link2, onClick: insertLink },
-        ].map(({ label, icon: Icon, onClick }) => (
-          <button
-            key={label}
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              onClick();
-            }}
-            aria-label={label}
-            title={label}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-[6px] text-ink-2 transition-colors hover:bg-surface hover:text-ink cursor-pointer"
+        <div
+          role="toolbar"
+          aria-label="Text formatting"
+          data-open={bubble.open && !menu.open}
+          className="popover-pop pointer-events-auto flex items-center gap-0.5 rounded-[10px] border border-rule-strong bg-card p-1"
+        >
+          {bubbleActions.map(({ label, icon: Icon, run }) => (
+            <button
+              key={label}
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                run();
+              }}
+              aria-label={label}
+              title={label}
+              className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-[6px] text-ink-2 transition-colors hover:bg-surface hover:text-ink"
+            >
+              <Icon className="h-3.5 w-3.5" />
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* `/` command menu. The outer box jumps to the caret, the inner panel animates. */}
+      <div
+        className="pointer-events-none absolute z-30"
+        style={{ top: menu.top, left: menu.left, width: MENU_WIDTH }}
+      >
+        <div
+          role="listbox"
+          aria-label="Insert block"
+          data-open={menu.open}
+          data-above={menu.above}
+          className={`popover-pop pointer-events-auto absolute left-0 w-full overflow-hidden rounded-[12px] border border-rule-strong bg-card ${
+            menu.above ? 'bottom-0' : 'top-0'
+          }`}
+        >
+          <div className="border-b border-rule px-3 py-2 font-mono text-[12px] text-ink-2">
+            {menu.query ? `Blocks matching "${menu.query}"` : 'Insert block'}
+          </div>
+          <div
+            ref={listRef}
+            className="relative overflow-y-auto overscroll-contain p-1"
+            style={{ maxHeight: MENU_MAX_HEIGHT - 36 }}
           >
-            <Icon className="h-3.5 w-3.5" />
-          </button>
-        ))}
+            {filtered.length > 0 && (
+              <span
+                aria-hidden="true"
+                className="menu-highlight"
+                style={{ transform: `translate3d(0, ${highlight.top}px, 0)`, height: highlight.height }}
+              />
+            )}
+            {filtered.length === 0 ? (
+              <p className="px-3 py-4 text-center text-[13px] text-ink-2">No matching block</p>
+            ) : (
+              filtered.map((cmd, idx) => {
+                const Icon = cmd.icon;
+                return (
+                  <button
+                    key={cmd.id}
+                    ref={(node) => {
+                      itemRefs.current[idx] = node;
+                    }}
+                    type="button"
+                    role="option"
+                    aria-selected={idx === menuIndex}
+                    onMouseMove={() => idx !== menuIndex && setMenuIndex(idx)}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      runCommand(cmd);
+                    }}
+                    className="relative z-10 flex w-full cursor-pointer items-center gap-2.5 rounded-[8px] px-2.5 py-2 text-left"
+                  >
+                    <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] border border-rule bg-paper text-ink">
+                      <Icon className="h-3.5 w-3.5" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13.5px] font-medium text-ink">{cmd.label}</span>
+                      <span className="block truncate text-[12.5px] text-ink-2">{cmd.description}</span>
+                    </span>
+                    <span className="shrink-0 font-mono text-[12px] text-ink-2">{cmd.badge}</span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
       </div>
 
-      {/* Notion-style `/` Slash Command Menu */}
       <div
-        role="listbox"
-        aria-label="Insert block"
-        style={{
-          transform: `translate3d(${slashMenu.left}px, ${slashMenu.top}px, 0)`,
-        }}
-        className={`toast-surface absolute left-0 top-0 z-30 w-[264px] overflow-hidden rounded-[12px] border border-rule-strong bg-card ${
-          slashMenu.open
-            ? 'opacity-100'
-            : 'pointer-events-none opacity-0'
-        }`}
-      >
-        <div className="border-b border-rule px-3 py-2 font-mono text-[11px] text-ink-3">
-          {slashMenu.query ? `Blocks matching "/${slashMenu.query}"` : 'Insert block'}
-        </div>
-        <div className="max-h-[280px] overflow-y-auto p-1">
-          {filteredCommands.length === 0 ? (
-            <p className="px-3 py-4 text-center text-[13px] text-ink-2">No matching command</p>
-          ) : (
-            filteredCommands.map((cmd, idx) => {
-              const Icon = cmd.icon;
-              const active = idx === slashIndex;
-              return (
-                <button
-                  key={cmd.id}
-                  type="button"
-                  role="option"
-                  aria-selected={active}
-                  onMouseEnter={() => setSlashIndex(idx)}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    executeSlashCommand(cmd);
-                  }}
-                  className={`flex w-full items-center gap-2.5 rounded-[8px] px-2.5 py-2 text-left transition-colors duration-150 cursor-pointer ${
-                    active ? 'bg-surface text-ink' : 'text-ink-2 hover:bg-surface/60'
-                  }`}
-                >
-                  <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] border border-rule bg-paper text-ink">
-                    <Icon className="h-3.5 w-3.5" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13.5px] font-medium text-ink">
-                      {cmd.label}
-                    </span>
-                    <span className="block truncate text-[11.5px] text-ink-2">
-                      {cmd.description}
-                    </span>
-                  </span>
-                  <span className="shrink-0 font-mono text-[11px] text-ink-3">
-                    {cmd.badge}
-                  </span>
-                </button>
-              );
-            })
-          )}
-        </div>
-      </div>
-
-      {/* Main Writing Textarea */}
-      <textarea
-        ref={textareaRef}
-        value={value}
-        onChange={(e) => {
-          onChange(e.target.value);
-          updateSlashState(e.target.value, e.target.selectionStart);
-          setBubble((prev) => (prev.open ? { ...prev, open: false } : prev));
-        }}
-        onKeyDown={handleKeyDown}
-        onSelect={updateSelectionBubble}
-        onClick={(e) => {
-          updateSlashState(e.currentTarget.value, e.currentTarget.selectionStart);
-          updateSelectionBubble();
-        }}
-        onPaste={handlePaste}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setIsDraggingFile(true);
-        }}
-        onDragLeave={() => setIsDraggingFile(false)}
-        onDrop={handleDrop}
-        spellCheck
-        placeholder={placeholder}
-        aria-label="Entry body"
-        className={`min-h-[460px] w-full flex-1 resize-none bg-transparent text-[15.5px] leading-[1.82] text-ink-body placeholder:text-ink-3 focus:outline-none ${
-          isDraggingFile ? 'rounded-[8px] bg-surface p-3 ring-2 ring-accent' : ''
-        }`}
+        ref={hostRef}
+        className={`md-editor flex flex-1 flex-col ${dragging ? 'md-editor-drop' : ''}`}
       />
 
-      {/* Subtle shortcut hint footer */}
-      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-rule pt-3 font-mono text-[11.5px] text-ink-3">
-        <span>/ commands</span>
+      {/* Shortcut hints */}
+      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-rule pt-3 font-mono text-[13px] text-ink-2">
+        <span>/ blocks</span>
+        <span># heading</span>
         <span>⌘B bold</span>
         <span>⌘I italic</span>
-        <span>⌘E code</span>
         <span>⌘K link</span>
         <span>Tab / ⇧Tab indent</span>
       </div>
     </div>
   );
 }
+

@@ -416,6 +416,40 @@ function escapeHtml(str: string): string {
     .replace(/'/g, '&#39;');
 }
 
+/**
+ * Markdown drops leading spaces on normal text, and 4+ spaces turn a line into a code block.
+ * The editor uses Tab to indent text, so keep that indent visible: leading spaces on
+ * plain lines become non-breaking spaces. Lists, list continuations and code fences are
+ * left alone so nested lists still work.
+ */
+export function preserveIndentation(markdown: string): string {
+  let inFence = false;
+  let inList = false;
+  return markdown
+    .split('\n')
+    .map((line) => {
+      const trimmed = line.trimStart();
+      if (/^(`{3,}|~{3,})/.test(trimmed)) {
+        inFence = !inFence;
+        return line;
+      }
+      if (inFence || !trimmed) return line;
+      const indent = line.length - trimmed.length;
+      if (/^([-*+]|\d+[.)])\s/.test(trimmed)) {
+        inList = true;
+        return line;
+      }
+      if (indent === 0) {
+        inList = false;
+        return line;
+      }
+      if (inList) return line;
+      const width = line.slice(0, indent).replace(/\t/g, '    ').length;
+      return '&nbsp;'.repeat(width * 2) + trimmed;
+    })
+    .join('\n');
+}
+
 export function renderMarkdownToHtml(
   markdown: string,
   imagePreviewMap?: Record<string, string>,
@@ -424,7 +458,7 @@ export function renderMarkdownToHtml(
 
   const markedInstance = new Marked({
     gfm: true,
-    breaks: false,
+    breaks: true,
     renderer: {
       heading({ tokens, depth, text }) {
         const html = this.parser.parseInline(tokens);
@@ -494,5 +528,5 @@ export function renderMarkdownToHtml(
     },
   });
 
-  return markedInstance.parse(markdown) as string;
+  return markedInstance.parse(preserveIndentation(markdown)) as string;
 }

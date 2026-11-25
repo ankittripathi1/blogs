@@ -5,9 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ClipboardEvent,
-  type DragEvent,
-  type KeyboardEvent,
 } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -18,7 +15,6 @@ import {
   Download,
   ExternalLink,
   Eye,
-  FileCode2,
   Image as ImageIcon,
   ImagePlus,
   Loader2,
@@ -34,8 +30,6 @@ import {
   estimateReadingTime,
   formatDateDisplay,
   getTodayIsoDate,
-  parsePostDocument,
-  serializePostToMarkdown,
   slugify,
 } from '../lib/markdown';
 import { deleteLocalPost, downloadPostMarkdown, saveLocalPost } from '../lib/posts';
@@ -47,7 +41,7 @@ import {
 } from '../lib/github';
 import { AdminShell } from '../components/AdminShell';
 import { MarkdownRenderer } from '../components/MarkdownRenderer';
-import { NotionMarkdownEditor } from '../components/NotionMarkdownEditor';
+import { NotionMarkdownEditor, type MarkdownEditorHandle } from '../components/NotionMarkdownEditor';
 
 interface AdminEditorPageProps {
   session: AdminSession;
@@ -55,7 +49,6 @@ interface AdminEditorPageProps {
 }
 
 type ViewMode = 'write' | 'split' | 'preview';
-type EditorMode = 'clean' | 'raw';
 
 interface DraftFields {
   title: string;
@@ -112,6 +105,27 @@ function fieldsToPostInput(fields: DraftFields, existingSlug?: string): PostInpu
   };
 }
 
+const VIEW_MODE_KEY = 'daylog:editor-view';
+const VIM_KEY = 'daylog:editor-vim';
+const draftKey = (slug?: string) => `daylog:autosave:${slug ?? 'new'}`;
+
+// Browser storage helpers. They fail quietly (private mode, full storage).
+function readStored(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function writeStored(key: string, value: string | null) {
+  try {
+    if (value === null) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, value);
+  } catch {
+    // Ignore: autosave is a safety net, not required.
+  }
+}
+
 export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
   const { slug: editSlug } = useParams<{ slug?: string }>();
   const navigate = useNavigate();
@@ -122,22 +136,21 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
   );
 
   const [fields, setFields] = useState<DraftFields>(() => fieldsFromPost(existingPost));
-  const [editorMode, setEditorMode] = useState<EditorMode>('clean');
-  const [rawText, setRawText] = useState<string>(() =>
-    existingPost ? serializePostToMarkdown(existingPost) : '#TITLE: \n#DESCRIPTION: \n\n',
-  );
-  const [viewMode, setViewMode] = useState<ViewMode>('split');
+  // Write is the default now that the editor shows formatting; the last choice is remembered.
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    const stored = readStored(VIEW_MODE_KEY);
+    return stored === 'split' || stored === 'preview' ? stored : 'write';
+  });
   const [showDetails, setShowDetails] = useState(false);
   const [imagePreviewMap, setImagePreviewMap] = useState<Record<string, string>>({});
   const [uploadingImage, setUploadingImage] = useState(false);
-  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [publishResult, setPublishResult] = useState<PublishResult | null>(null);
 
-  const bodyTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const rawTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<MarkdownEditorHandle>(null);
+  const summaryInputRef = useRef<HTMLInputElement>(null);
   const inlineImageInputRef = useRef<HTMLInputElement>(null);
   const coverImageInputRef = useRef<HTMLInputElement>(null);
   const viewTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -158,38 +171,47 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
     return () => window.removeEventListener('resize', updatePill);
   }, [viewMode]);
 
+  useEffect(() => writeStored(VIEW_MODE_KEY, viewMode), [viewMode]);
+
+  const [vimEnabled, setVimEnabled] = useState(() => readStored(VIM_KEY) === '1');
+  useEffect(() => writeStored(VIM_KEY, vimEnabled ? '1' : '0'), [vimEnabled]);
+
+  // Load the post, then any unsaved changes autosaved for it.
   useEffect(() => {
-    if (existingPost) {
-      setFields(fieldsFromPost(existingPost));
-      setRawText(serializePostToMarkdown(existingPost));
-    } else if (!editSlug) {
-      setFields(fieldsFromPost(undefined));
-      setRawText('#TITLE: \n#DESCRIPTION: \n\n');
+    if (!existingPost && editSlug) return;
+    const base = fieldsFromPost(existingPost);
+    let restored: DraftFields | null = null;
+    try {
+      const raw = readStored(draftKey(editSlug));
+      restored = raw ? { ...base, ...(JSON.parse(raw) as Partial<DraftFields>) } : null;
+    } catch {
+      restored = null;
+    }
+    if (restored && JSON.stringify(restored) !== JSON.stringify(base)) {
+      setFields(restored);
+      setNotice('Restored your unsaved changes.');
+    } else {
+      setFields(base);
     }
   }, [existingPost?.slug, editSlug]);
 
-  const parsedRaw = useMemo(
-    () => parsePostDocument(rawText, existingPost?.slug ?? 'untitled-note'),
-    [rawText, existingPost?.slug],
-  );
+  // Autosave edits to this browser a second after typing stops, so a refresh or a closed
+  // tab never loses work. The copy is dropped once it matches the saved post again.
+  useEffect(() => {
+    // The post is still loading: don't overwrite its autosave with empty fields.
+    if (editSlug && !existingPost) return;
+    const timer = window.setTimeout(() => {
+      const base = fieldsFromPost(existingPost);
+      const same = JSON.stringify(fields) === JSON.stringify(base);
+      writeStored(draftKey(editSlug), same ? null : JSON.stringify(fields));
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [fields, existingPost, editSlug]);
 
-  const postInput: PostInput = useMemo(() => {
-    if (editorMode === 'raw') {
-      return {
-        slug: existingPost?.slug ?? slugify(parsedRaw.title),
-        title: parsedRaw.title === 'untitled-note' ? '' : parsedRaw.title,
-        date: parsedRaw.date || getTodayIsoDate(),
-        project: 'General',
-        tags: parsedRaw.tags,
-        summary: parsedRaw.summary,
-        snippet: parsedRaw.snippet,
-        coverImage: parsedRaw.coverImage,
-        featured: parsedRaw.featured,
-        body: parsedRaw.body,
-      };
-    }
-    return fieldsToPostInput(fields, existingPost?.slug);
-  }, [editorMode, parsedRaw, fields, existingPost?.slug]);
+  const postInput: PostInput = useMemo(
+    () => fieldsToPostInput(fields, existingPost?.slug),
+    [fields, existingPost?.slug],
+  );
 
   const wordCount = useMemo(() => {
     const clean = postInput.body.trim();
@@ -206,118 +228,13 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
     ? imagePreviewMap[postInput.coverImage] ?? postInput.coverImage
     : undefined;
 
-  const toggleEditorMode = () => {
-    if (editorMode === 'clean') {
-      setRawText(serializePostToMarkdown(fieldsToPostInput(fields, existingPost?.slug)));
-      setEditorMode('raw');
-    } else {
-      const parsed = parsePostDocument(rawText, existingPost?.slug ?? 'untitled-note');
-      setFields({
-        title: parsed.title === 'untitled-note' ? '' : parsed.title,
-        summary: parsed.summary,
-        date: parsed.date || getTodayIsoDate(),
-        tagsText: parsed.tags.join(', '),
-        snippet: parsed.snippet ?? '',
-        coverImage: parsed.coverImage ?? '',
-        featured: parsed.featured,
-        body: parsed.body,
-      });
-      setEditorMode('clean');
-    }
-  };
-
+  // Inserts at the editor caret, or appends when the editor is not mounted (preview mode).
   const insertAtCursor = (snippet: string) => {
-    const isRaw = editorMode === 'raw';
-    const el = isRaw ? rawTextareaRef.current : bodyTextareaRef.current;
-    const currentText = isRaw ? rawText : fields.body;
-
-    const update = (next: string) => {
-      if (isRaw) {
-        setRawText(next);
-      } else {
-        setFields((prev) => ({ ...prev, body: next }));
-      }
-    };
-
-    if (!el) {
-      update(`${currentText}\n${snippet}`);
-      return;
+    if (editorRef.current) {
+      editorRef.current.insert(snippet);
+    } else {
+      setFields((prev) => ({ ...prev, body: `${prev.body}\n${snippet}` }));
     }
-
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-    const next = currentText.slice(0, start) + snippet + currentText.slice(end);
-    update(next);
-    window.setTimeout(() => {
-      el.focus();
-      const pos = start + snippet.length;
-      el.setSelectionRange(pos, pos);
-    }, 0);
-  };
-
-  const handleTextareaKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key !== 'Tab') return;
-    e.preventDefault();
-    if (!e.shiftKey) {
-      insertAtCursor('  ');
-      return;
-    }
-    const el = e.currentTarget;
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-    const lineStart = rawText.lastIndexOf('\n', start - 1) + 1;
-    const lineEndIdx = rawText.indexOf('\n', end);
-    const lineEnd = lineEndIdx === -1 ? rawText.length : lineEndIdx;
-    const lines = rawText.slice(lineStart, lineEnd).split('\n');
-    let removedFirst = 0;
-    let removedTotal = 0;
-    const outdented = lines
-      .map((line, idx) => {
-        if (line.startsWith('  ')) {
-          if (idx === 0) removedFirst = 2;
-          removedTotal += 2;
-          return line.slice(2);
-        }
-        if (line.startsWith('\t') || line.startsWith(' ')) {
-          if (idx === 0) removedFirst = 1;
-          removedTotal += 1;
-          return line.slice(1);
-        }
-        return line;
-      })
-      .join('\n');
-    if (removedTotal === 0) return;
-    const next = rawText.slice(0, lineStart) + outdented + rawText.slice(lineEnd);
-    setRawText(next);
-    window.requestAnimationFrame(() => {
-      const nextStart = Math.max(lineStart, start - removedFirst);
-      const nextEnd = Math.max(nextStart, end - removedTotal);
-      el.focus();
-      el.setSelectionRange(nextStart, nextEnd);
-    });
-  };
-
-  const setOrUpdateRawCoverDirective = (coverPath: string) => {
-    setRawText((prev) => {
-      if (/^#COVER\s*:/im.test(prev)) {
-        return prev.replace(/^#COVER\s*:.*$/im, `#COVER: ${coverPath}`);
-      }
-      const lines = prev.split('\n');
-      let insertIdx = 0;
-      for (let i = 0; i < lines.length; i += 1) {
-        if (
-          /^#(TITLE|DESCRIPTION|SUMMARY|PROJECT|DATE|TAGS|SNIPPET|COVER|FEATURED)\s*:/i.test(
-            lines[i].trim(),
-          )
-        ) {
-          insertIdx = i + 1;
-        } else if (lines[i].trim() !== '') {
-          break;
-        }
-      }
-      lines.splice(insertIdx, 0, `#COVER: ${coverPath}`);
-      return lines.join('\n');
-    });
   };
 
   const handleUploadImage = async (file: File, mode: 'inline' | 'cover') => {
@@ -332,11 +249,7 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
       }));
 
       if (mode === 'cover') {
-        if (editorMode === 'raw') {
-          setOrUpdateRawCoverDirective(uploaded.publicPath);
-        } else {
-          setFields((prev) => ({ ...prev, coverImage: uploaded.publicPath }));
-        }
+        setFields((prev) => ({ ...prev, coverImage: uploaded.publicPath }));
         setNotice('Cover image attached.');
       } else {
         const alt = file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ');
@@ -350,25 +263,6 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
     }
   };
 
-  const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
-    const items = Array.from(e.clipboardData.items);
-    const imageItem = items.find((i) => i.type.startsWith('image/'));
-    if (!imageItem) return;
-    const file = imageItem.getAsFile();
-    if (!file) return;
-    e.preventDefault();
-    void handleUploadImage(file, 'inline');
-  };
-
-  const handleDrop = (e: DragEvent<HTMLTextAreaElement>) => {
-    e.preventDefault();
-    setIsDraggingFile(false);
-    const file = Array.from(e.dataTransfer.files).find((f) => f.type.startsWith('image/'));
-    if (file) {
-      void handleUploadImage(file, 'inline');
-    }
-  };
-
   const handleSaveDraft = useCallback(() => {
     if (!postInput.title || postInput.title === 'untitled-note') {
       setError('Add a title before saving.');
@@ -376,6 +270,7 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
     }
     setError(null);
     const saved = saveLocalPost(postInput);
+    writeStored(draftKey(editSlug), null);
     setNotice('Draft saved locally.');
     if (!editSlug) {
       navigate(`/admin/edit/${saved.slug}`, { replace: true });
@@ -390,6 +285,7 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
 
     if (session.mode !== 'github') {
       const saved = saveLocalPost(postInput);
+      writeStored(draftKey(editSlug), null);
       setError(null);
       setNotice('Saved to your blog on this device.');
       if (!editSlug) {
@@ -410,6 +306,7 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
         existingPost?.source === 'repo' ? existingPost.repoPath : undefined,
       );
       deleteLocalPost(postInput.slug || slugify(postInput.title));
+      writeStored(draftKey(editSlug), null);
       setPublishResult(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Publish failed.');
@@ -523,12 +420,11 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
 
               <span className="mx-1 h-4 w-px bg-rule" aria-hidden="true" />
 
-              {editorMode === 'clean' && (
-                <button
+              <button
                   type="button"
                   onClick={() => setShowDetails((v) => !v)}
                   aria-expanded={showDetails}
-                  className={`inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium transition-colors cursor-pointer ${
+                  className={`inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[14px] font-medium transition-colors cursor-pointer ${
                     showDetails
                       ? 'bg-surface text-ink border border-rule-strong'
                       : 'text-ink-2 hover:bg-surface hover:text-ink'
@@ -537,27 +433,6 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                   <SlidersHorizontal className="h-3.5 w-3.5" />
                   <span className="hidden sm:inline">Details</span>
                 </button>
-              )}
-
-              <button
-                type="button"
-                onClick={toggleEditorMode}
-                title={
-                  editorMode === 'clean'
-                    ? 'Switch to raw #TITLE: Markdown'
-                    : 'Switch to clean editor'
-                }
-                className={`inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium transition-colors cursor-pointer ${
-                  editorMode === 'raw'
-                    ? 'bg-surface text-ink border border-rule-strong'
-                    : 'text-ink-2 hover:bg-surface hover:text-ink'
-                }`}
-              >
-                <FileCode2 className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">
-                  {editorMode === 'raw' ? 'Raw' : 'Markdown'}
-                </span>
-              </button>
 
               {session.mode !== 'github' && (
                 <>
@@ -585,7 +460,21 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
             </div>
 
             <div className="flex items-center gap-2 sm:gap-3">
-              <span className="hidden font-mono text-[12px] text-ink-2 tabular-nums md:inline">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={vimEnabled}
+                onClick={() => setVimEnabled((v) => !v)}
+                title={vimEnabled ? 'Vim keys on (hjkl, V + d, ysiw", :w)' : 'Turn on Vim keys'}
+                className="inline-flex h-8 cursor-pointer items-center gap-2 rounded-full px-2.5 font-mono text-[13.5px] text-ink-2 transition-colors hover:bg-surface hover:text-ink"
+              >
+                <span>Vim</span>
+                <span className="vim-switch" data-on={vimEnabled} aria-hidden="true">
+                  <span />
+                </span>
+              </button>
+
+              <span className="hidden font-mono text-[13.5px] text-ink-2 tabular-nums md:inline">
                 {wordCount} {wordCount === 1 ? 'word' : 'words'} · {readingMinutes} min
               </span>
 
@@ -616,7 +505,7 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                     aria-label={label}
                     aria-pressed={viewMode === id}
                     title={label}
-                    className={`relative z-10 inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-[12px] font-medium transition-colors duration-200 cursor-pointer ${
+                    className={`relative z-10 inline-flex h-8 items-center gap-1 rounded-full px-3 text-[13.5px] font-medium transition-colors duration-200 cursor-pointer ${
                       viewMode === id ? 'text-paper' : 'text-ink-2 hover:text-ink'
                     }`}
                   >
@@ -630,7 +519,7 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                 type="button"
                 onClick={handleSaveDraft}
                 title="Save draft (⌘S)"
-                className="btn-secondary min-h-[34px] px-3.5 text-[13px]"
+                className="btn-secondary min-h-[38px] px-4 text-[14px]"
               >
                 <Save className="h-3.5 w-3.5" />
                 <span className="hidden sm:inline">Save</span>
@@ -640,7 +529,7 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                 type="button"
                 disabled={publishing}
                 onClick={() => void handlePublish()}
-                className="btn-primary min-h-[34px] px-4 text-[13px]"
+                className="btn-primary min-h-[38px] px-4.5 text-[14px]"
               >
                 {publishing ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -681,7 +570,7 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                     href={publishResult.commitUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="editorial-link text-[12.5px] text-ink"
+                    className="editorial-link text-[13.5px] text-ink"
                   >
                     <span>Commit</span>
                     <ExternalLink className="h-3 w-3" />
@@ -690,7 +579,7 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                     href={publishResult.actionsUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="editorial-link text-[12.5px] text-ink"
+                    className="editorial-link text-[13.5px] text-ink"
                   >
                     <span>Deploy</span>
                     <ExternalLink className="h-3 w-3" />
@@ -726,26 +615,6 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                 viewMode === 'split' ? 'border-b border-rule lg:border-b-0 lg:border-r' : ''
               }`}
             >
-              {editorMode === 'raw' ? (
-                <textarea
-                  ref={rawTextareaRef}
-                  value={rawText}
-                  onChange={(e) => setRawText(e.target.value)}
-                  onKeyDown={handleTextareaKeyDown}
-                  onPaste={handlePaste}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setIsDraggingFile(true);
-                  }}
-                  onDragLeave={() => setIsDraggingFile(false)}
-                  onDrop={handleDrop}
-                  spellCheck
-                  aria-label="Raw Markdown post"
-                  className={`min-h-[calc(100vh-128px)] w-full flex-1 resize-none bg-transparent p-6 font-mono text-[14px] leading-[1.8] text-ink focus:outline-none sm:p-10 ${
-                    isDraggingFile ? 'bg-surface ring-2 ring-inset ring-accent' : ''
-                  }`}
-                />
-              ) : (
                 <div
                   className={`mx-auto flex w-full flex-1 flex-col px-6 py-9 sm:px-10 sm:py-11 ${
                     viewMode === 'write' ? 'max-w-[740px]' : ''
@@ -756,6 +625,13 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                     type="text"
                     value={fields.title}
                     onChange={(e) => setFields((prev) => ({ ...prev, title: e.target.value }))}
+                    onKeyDown={(e) => {
+                      // Enter moves on to the summary, like Notion.
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                        e.preventDefault();
+                        summaryInputRef.current?.focus();
+                      }
+                    }}
                     placeholder="Title your post..."
                     aria-label="Entry title"
                     className="font-display w-full bg-transparent text-[clamp(1.65rem,3vw,2.15rem)] font-semibold leading-[1.2] text-ink placeholder:text-ink-3 focus:outline-none"
@@ -766,6 +642,13 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                     type="text"
                     value={fields.summary}
                     onChange={(e) => setFields((prev) => ({ ...prev, summary: e.target.value }))}
+                    ref={summaryInputRef}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                        e.preventDefault();
+                        editorRef.current?.focus();
+                      }
+                    }}
                     placeholder="Short summary or opening thought (optional)..."
                     aria-label="Entry summary"
                     className="mt-3.5 w-full bg-transparent text-[16.5px] leading-[1.55] text-ink-2 placeholder:text-ink-3 focus:outline-none"
@@ -778,7 +661,7 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                         <div>
                           <label
                             htmlFor="meta-date"
-                            className="block text-[12.5px] font-medium text-ink-2"
+                            className="block text-[13.5px] font-medium text-ink-2"
                           >
                             Date
                           </label>
@@ -796,7 +679,7 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                         <div>
                           <label
                             htmlFor="meta-tags"
-                            className="block text-[12.5px] font-medium text-ink-2"
+                            className="block text-[13.5px] font-medium text-ink-2"
                           >
                             Tags (comma-separated)
                           </label>
@@ -815,7 +698,7 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                         <div className="sm:col-span-2">
                           <label
                             htmlFor="meta-snippet"
-                            className="block text-[12.5px] font-medium text-ink-2"
+                            className="block text-[13.5px] font-medium text-ink-2"
                           >
                             Highlight snippet (optional)
                           </label>
@@ -848,7 +731,7 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                             <button
                               type="button"
                               onClick={() => setFields((prev) => ({ ...prev, coverImage: '' }))}
-                              className="text-[12.5px] font-medium text-danger hover:underline cursor-pointer"
+                              className="text-[13.5px] font-medium text-danger hover:underline cursor-pointer"
                             >
                               Remove cover
                             </button>
@@ -858,19 +741,21 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                     </div>
                   </div>
 
-                  {/* Body Writing Area (Notion-style `/` commands, Shift+Tab, shortcuts & selection bar) */}
+                  {/* Body: live-preview Markdown editor with `/` commands and optional Vim keys */}
                   <div className="mt-6 flex flex-1 flex-col border-t border-rule pt-6">
                     <NotionMarkdownEditor
-                      textareaRef={bodyTextareaRef}
+                      ref={editorRef}
                       value={fields.body}
                       onChange={(next) => setFields((prev) => ({ ...prev, body: next }))}
                       onPasteImage={(file) => void handleUploadImage(file, 'inline')}
                       onDropImage={(file) => void handleUploadImage(file, 'inline')}
                       onRequestImageUpload={() => inlineImageInputRef.current?.click()}
+                      onSave={handleSaveDraft}
+                      vimEnabled={vimEnabled}
+                      imagePreviewMap={imagePreviewMap}
                     />
                   </div>
                 </div>
-              )}
             </div>
           )}
 
@@ -878,7 +763,7 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
           {viewMode !== 'write' && (
             <div className="overflow-y-auto bg-paper px-6 py-9 sm:px-10 sm:py-11">
               <div className="mx-auto max-w-[66ch]">
-                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 font-mono text-[12px] text-ink-2 tabular-nums">
+                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 font-mono text-[13px] text-ink-2 tabular-nums">
                   <span>{formatDateDisplay(postInput.date)}</span>
                   <span aria-hidden="true" className="text-ink-3">/</span>
                   <span>{readingMinutes} min read</span>
@@ -899,7 +784,7 @@ export function AdminEditorPage({ session, posts }: AdminEditorPageProps) {
                     {postInput.tags.map((tag) => (
                       <li
                         key={tag}
-                        className="rounded-full border border-rule bg-surface px-3 py-0.5 font-mono text-[12px] text-ink-2"
+                        className="rounded-full border border-rule bg-surface px-3 py-0.5 font-mono text-[13px] text-ink-2"
                       >
                         {tag}
                       </li>

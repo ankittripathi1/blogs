@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { getAllPosts, getBundledRepoPosts, getLocalPosts } from './lib/posts';
 import { loadAdminSession } from './lib/github';
@@ -10,7 +10,12 @@ import { HomePage } from './pages/HomePage';
 import { PostPage } from './pages/PostPage';
 import { AdminLoginPage } from './pages/AdminLoginPage';
 import { AdminDashboardPage } from './pages/AdminDashboardPage';
-import { AdminEditorPage } from './pages/AdminEditorPage';
+
+// The editor pulls in CodeMirror and Vim (~220 KB gzipped). Load it only on the write pages,
+// so readers of the public blog never download it.
+const AdminEditorPage = lazy(() =>
+  import('./pages/AdminEditorPage').then((m) => ({ default: m.AdminEditorPage })),
+);
 
 function ScrollToTop() {
   const { pathname } = useLocation();
@@ -119,13 +124,17 @@ function AppShell() {
             <Route
               path="/admin/new"
               element={requireAdmin(
-                <AdminEditorPage session={session!} posts={publicPosts} />,
+                <Suspense fallback={null}>
+                  <AdminEditorPage session={session!} posts={publicPosts} />
+                </Suspense>,
               )}
             />
             <Route
               path="/admin/edit/:slug"
               element={requireAdmin(
-                <AdminEditorPage session={session!} posts={publicPosts} />,
+                <Suspense fallback={null}>
+                  <AdminEditorPage session={session!} posts={publicPosts} />
+                </Suspense>,
               )}
             />
 
